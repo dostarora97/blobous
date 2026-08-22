@@ -223,14 +223,14 @@ function startLocalRoom(n){ others = Array.from({length:n},(_,i)=>makeBot(i)); o
 
 // ===== blobs: denser, closer, high-value rarer =====
 let blobs=[], spawnTimer=0, eatenIds=new Set(), gameActive=true;
-const R_MIN=5,R_MAX=15, CAP=80;
+const R_MIN=5,R_MAX=15, CAP=120;
 function spawnBlob(){
   // Uniform random position across the full world rectangle
   const x=(Math.random()*2-1)*WORLD_HALF, y=(Math.random()*2-1)*WORLD_HALF;
   const roll=Math.random();
   const r = roll<0.70 ? 11+Math.random()*4 : roll<0.92 ? 8+Math.random()*3 : 5+Math.random()*3; // mostly big/cheap, rarely small/rich
   const t=(r-R_MIN)/(R_MAX-R_MIN); const points=Math.round((50-t*40)/5)*5;
-  const life=(7+Math.random()*10)*1000;
+  const life=(3+Math.random()*4)*1000;
   const emoji = points>=40?'🤩':points>=20?'😋':'🍋';
   blobs.push({ id:'b'+Math.floor(Math.random()*1e9), x, y, r, points, life, maxLife:life, emoji, hold:0, eaterId:null });
 }
@@ -429,7 +429,7 @@ function update(now){
 
   // offline sim: spawn blobs + move bots
   if(!online){
-    spawnTimer-=dt; if(spawnTimer<=0 && blobs.length<CAP){ spawnBlob(); spawnTimer=180+Math.random()*280; }
+    spawnTimer-=dt; if(spawnTimer<=0 && blobs.length<CAP){ spawnBlob(); spawnTimer=80+Math.random()*100; }
     for(const b of others) if(b.isBot){ botThink(b,dt); clampToWorld(b); }
   }
   netSend(dt);

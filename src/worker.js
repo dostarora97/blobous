@@ -19,7 +19,7 @@ import { DurableObject } from 'cloudflare:workers';
 
 // ── Shared constants ───────────────────────────────────────────────────────────
 
-const BLOB_CAP        = 80;
+const BLOB_CAP        = 120;
 const BLOB_R_MIN      = 5;
 const BLOB_R_MAX      = 15;
 const WORLD_HALF_SRV  = 1200;  // must match client WORLD_HALF
@@ -37,7 +37,7 @@ function spawnBlob() {
                             :  5 + Math.random() * 3;
   const t      = (r - BLOB_R_MIN) / (BLOB_R_MAX - BLOB_R_MIN);
   const points = Math.round((50 - t * 40) / 5) * 5;
-  const life   = (7 + Math.random() * 10) * 1000;
+  const life   = (3 + Math.random() * 4) * 1000;
   const x = (Math.random() * 2 - 1) * WORLD_HALF_SRV;
   const y = (Math.random() * 2 - 1) * WORLD_HALF_SRV;
   return { id: crypto.randomUUID(), x, y, r, points, life, maxLife: life };
@@ -234,7 +234,7 @@ export class BlobRoom extends DurableObject {
     if (this.#players.size < this.#minPlayers) return;  // not enough players; don't reschedule
 
     // Advance blob simulation
-    while (this.#blobs.size < BLOB_CAP && Math.random() < 0.4) {
+    while (this.#blobs.size < BLOB_CAP && Math.random() < 0.7) {
       const b = spawnBlob();
       this.#blobs.set(b.id, b);
     }
