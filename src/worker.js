@@ -19,10 +19,10 @@ import { DurableObject } from 'cloudflare:workers';
 
 // ── Shared constants ───────────────────────────────────────────────────────────
 
-const BLOB_CAP        = 40;
+const BLOB_CAP        = 80;
 const BLOB_R_MIN      = 5;
 const BLOB_R_MAX      = 15;
-const WORLD_DIST      = 1000;   // max blob spawn radius (matches client WORLD_HALF = 1200)
+const WORLD_HALF_SRV  = 1200;  // must match client WORLD_HALF
 const TICK_MS         = 125;    // 8 Hz game loop
 const MIN_PLAYERS     = 2;      // game doesn't start below this
 const ROOM_TTL_MS     = 4 * 60 * 60 * 1000;  // rooms expire after 4 hours
@@ -38,9 +38,9 @@ function spawnBlob() {
   const t      = (r - BLOB_R_MIN) / (BLOB_R_MAX - BLOB_R_MIN);
   const points = Math.round((50 - t * 40) / 5) * 5;
   const life   = (7 + Math.random() * 10) * 1000;
-  const ang    = Math.random() * Math.PI * 2;
-  const dist   = Math.random() * WORLD_DIST;
-  return { id: crypto.randomUUID(), x: Math.cos(ang) * dist, y: Math.sin(ang) * dist, r, points, life, maxLife: life };
+  const x = (Math.random() * 2 - 1) * WORLD_HALF_SRV;
+  const y = (Math.random() * 2 - 1) * WORLD_HALF_SRV;
+  return { id: crypto.randomUUID(), x, y, r, points, life, maxLife: life };
 }
 
 /** Consistent JSON response with CORS header. */
