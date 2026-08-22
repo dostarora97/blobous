@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blob Party — circles, velocity & feeding</title>
+<style>
+  :root{ --bg:#0c1a1d; --panel:#10262a; --grid:rgba(127,178,184,0.09); --grid-major:rgba(127,178,184,0.20);
+    --target:#e8a33d; --acquired:#6fcf97; --reticle:#f4ede0; --text:#a9c6ca; --text-dim:#5c7a7e; --accent:#7fb2b8; --throttle:#7fb2b8; --pts:#f4d47a; }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;background:var(--bg);overflow:hidden}
+  body{font-family:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;color:var(--text);-webkit-font-smoothing:antialiased}
+  #stage{position:fixed;inset:0} canvas{display:block;width:100%;height:100%}
+  canvas.normal{cursor:crosshair} canvas.inverted{cursor:none}
+  .hud{position:fixed;pointer-events:none;z-index:5;font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--text-dim)}
+  .hud .val{color:var(--accent)}
+  #hud-tl{top:20px;left:22px;line-height:1.9}
+  #hud-tr{top:20px;right:22px;text-align:right;line-height:1.9}
+  #score{color:var(--pts);font-size:20px;letter-spacing:.04em}
+  #title{position:fixed;bottom:24px;left:22px;z-index:5;pointer-events:none;max-width:280px}
+  #title h1{font-size:13px;letter-spacing:.34em;text-transform:uppercase;color:var(--reticle);font-weight:600;margin-bottom:8px}
+  #title p{font-size:11px;line-height:1.7;color:var(--text-dim);letter-spacing:.04em}
+  #dock{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:6;display:flex;align-items:center;gap:14px;background:rgba(16,38,42,.82);backdrop-filter:blur(6px);border:1px solid var(--grid-major);border-radius:4px;padding:10px 12px 10px 16px}
+  #dock .state{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--text-dim);display:flex;align-items:center;gap:8px}
+  #dock .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
+  #dock.inverted .dot{background:var(--acquired);box-shadow:0 0 8px var(--acquired)}
+  #dock .state b{color:var(--reticle);font-weight:600}
+  #toggle{font:inherit;font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--bg);background:var(--reticle);border:none;border-radius:3px;padding:9px 16px;cursor:pointer;transition:background .18s}
+  #toggle:hover{background:#fff} #dock.inverted #toggle{background:transparent;color:var(--text-dim);border:1px solid var(--grid-major);cursor:default}
+  kbd{font:inherit;font-size:.9em;background:rgba(0,0,0,.25);color:inherit;border:1px solid currentColor;border-radius:3px;padding:0 5px;opacity:.8}
+  #badge{position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:5;pointer-events:none;font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--text-dim);padding:5px 12px;border:1px solid var(--grid-major);border-radius:2px;opacity:0;transition:opacity .3s}
+  #badge.show{opacity:1}
+  #board{position:fixed;top:54px;left:50%;transform:translateX(-50%);z-index:5;pointer-events:none;display:flex;flex-direction:column;gap:2px;align-items:center;font-size:10px;letter-spacing:.1em}
+  #board .r{color:var(--text-dim)} #board .r b{color:var(--reticle)}
+  /* right column: shop */
+  #shop{position:fixed;top:92px;right:22px;z-index:6;width:194px;display:flex;flex-direction:column;gap:8px}
+  .shop-h{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--text-dim)}
+  .up{background:rgba(16,38,42,.82);backdrop-filter:blur(6px);border:1px solid var(--grid-major);border-radius:4px;padding:8px 10px;cursor:pointer;transition:border-color .15s,opacity .15s;pointer-events:auto}
+  .up:hover{border-color:var(--accent)} .up.dim{opacity:.45} .up.maxed{border-color:rgba(111,207,151,.4)}
+  .up .row{display:flex;justify-content:space-between;align-items:center}
+  .up .nm{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--reticle);font-weight:600}
+  .up .hot{font-size:9px;color:var(--text-dim);border:1px solid var(--grid-major);border-radius:3px;padding:0 5px}
+  .up .desc{font-size:9px;color:var(--text-dim);letter-spacing:.02em;margin:3px 0 6px;line-height:1.5}
+  .up .pips{display:flex;gap:3px}
+  .up .pip{width:13px;height:4px;border-radius:2px;background:var(--grid-major)} .up .pip.on{background:var(--accent)}
+  .up .cost{font-size:10px;color:var(--pts)} .up.maxed .cost{color:var(--acquired)}
+  /* left column: party */
+  #party{position:fixed;top:100px;left:22px;z-index:6;width:210px;background:rgba(16,38,42,.82);backdrop-filter:blur(6px);border:1px solid var(--grid-major);border-radius:4px;padding:10px 12px}
+  #party .pk-h{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--text-dim);margin-bottom:6px}
+  #party .pk-status{font-size:10px;color:var(--accent);letter-spacing:.04em;margin-bottom:8px;line-height:1.5}
+  #party .pk-row{display:flex;gap:6px;margin-bottom:6px}
+  #party input{flex:1;min-width:0;font:inherit;font-size:11px;background:rgba(0,0,0,.25);border:1px solid var(--grid-major);border-radius:3px;color:var(--reticle);padding:6px 8px;letter-spacing:.1em;text-transform:uppercase}
+  #party button{font:inherit;font-size:10px;letter-spacing:.12em;text-transform:uppercase;font-weight:600;color:var(--bg);background:var(--accent);border:none;border-radius:3px;padding:6px 10px;cursor:pointer}
+  #party button:hover{background:var(--reticle)}
+  #party .pk-wide{width:100%;margin-bottom:8px}
+  #party .pk-players{display:flex;flex-direction:column;gap:3px}
+  #party .pk-p{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--text-dim)}
+  #party .pk-sw{width:8px;height:8px;border-radius:50%;flex:none}
+  @media (max-width:720px){#party,#title{display:none}} @media (max-width:640px){#shop{display:none}}
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="c" class="normal"></canvas></div>
+
+  <div class="hud" id="hud-tl">mode&nbsp;&nbsp;&nbsp;<span class="val" id="modeText">normal control</span><br>throttle&nbsp;<span class="val" id="thr">—</span><br>speed&nbsp;&nbsp;<span class="val" id="spd">0 px/s</span></div>
+  <div class="hud" id="hud-tr">points<br><span id="score">0</span><br><span style="font-size:11px">size <span class="val" id="rsz">14</span></span></div>
+
+  <div id="board"></div>
+  <div id="badge"></div>
+
+  <div id="party">
+    <div class="pk-h">Party</div>
+    <div class="pk-status" id="pkStatus">Offline room · bots</div>
+    <div class="pk-row"><input id="pkCode" placeholder="room code" maxlength="12"><button id="pkJoin">Join</button></div>
+    <button class="pk-wide" id="pkCreate">Create room</button>
+    <div class="pk-players" id="pkPlayers"></div>
+  </div>
+
+  <div id="shop"></div>
+
+  <div id="title"><h1>Blob Party</h1><p id="titleText">Stretch the velocity line to fly. Blobs inside your circle get eaten. Overlap a smaller circle to steal its size; avoid bigger ones.</p></div>
+
+  <div id="dock"><div class="state"><span class="dot"></span><span id="dockState">You control the <b>cursor</b></span></div><button id="toggle">Enter inverted mode <kbd>L</kbd></button></div>
+
+<script>
+const canvas=document.getElementById('c'), ctx=canvas.getContext('2d');
+const dock=document.getElementById('dock'), toggleBtn=document.getElementById('toggle'), badge=document.getElementById('badge');
+const els={ modeText:id('modeText'), thr:id('thr'), spd:id('spd'), score:id('score'), rsz:id('rsz'), dockState:id('dockState'), titleText:id('titleText') };
+function id(x){return document.getElementById(x)}
+
+// ===== PARTYKIT =====
+// When this page is opened from the PartyKit URL (dev or deployed), it auto-connects to that server.
+// Opened as a plain local file (file://), it stays offline with bots.
+// You normally do NOT need to edit this — leave it empty. (Override only for advanced setups.)
+const PARTY_HOST = "";
+function partyHost(){ return PARTY_HOST || (location.protocol.indexOf('http')===0 ? location.host : ''); }
+// ===========================
+
+let mode='normal', locked=false;
+let camera={x:0,y:0}, handle={x:0,y:0}, mouse={x:innerWidth/2,y:innerHeight/2}, speed=0;
+let dpr=1,W=0,H=0,cx=0,cy=0;
+const MAX_R=150, DEADZONE=10, GAIN=0.65;
+
+// upgradable stat — the only thing points buy now
+let eatRate=14, playerStealMult=1;
+let upg={drain:0};
+const UP={ drain:{name:'Drain',hot:'Space',max:8,base:45,desc:'Eat blobs & drain other circles faster'} };
+function recompute(){ eatRate=14*Math.pow(0.82,upg.drain); playerStealMult=1+0.35*upg.drain; }
+function cost(k){ return Math.round(UP[k].base*Math.pow(1.7,upg[k])); }
+function buy(k){ if(upg[k]>=UP[k].max){flash(UP[k].name+' is maxed');return;} const c=cost(k); if(me.score<c){flash('Need '+c+' points');return;} me.score-=c; upg[k]++; recompute(); renderShop(); flash(UP[k].name+' → level '+upg[k]); }
+
+// ===== circles: you + others (bots or remote players) =====
+const COLORS=['#e8a33d','#6fcf97','#e07a6f','#b08fe0','#f4d47a','#7fb2b8'];
+const NAMES=['Nyx','Orbit','Pax','Quill','Rho','Sol','Vega','Wisp'];
+const MIN_R=8, STEAL_RATE=0.5, GROW_EFF=0.75, EAT_GROWTH=6, PASSIVE_DECAY=0.04;
+const SPEED_BASE=520, SPEED_REF=14, SPEED_EXP=0.55, SPEED_FLOOR=150;  // speed falls off as radius grows
+function speedForRadius(r){ return Math.max(SPEED_FLOOR, SPEED_BASE*Math.pow(SPEED_REF/r, SPEED_EXP)); }
+const me={ id:'me', name:'You', x:0,y:0, r:14, score:0, color:'#f4ede0', isPlayer:true };
+let others=[];                         // bots offline, remote players online
+let online=false;
+function circles(){ return [me,...others]; }
+
+function makeBot(i){ const ang=Math.random()*Math.PI*2, dist=200+Math.random()*500;
+  return { id:'bot'+i+'_'+Math.floor(Math.random()*1e4), name:NAMES[i%NAMES.length], x:camera.x+Math.cos(ang)*dist, y:camera.y+Math.sin(ang)*dist,
+    r:12+Math.random()*8, score:0, color:COLORS[i%COLORS.length], isBot:true, tx:0,ty:0 }; }
+function startLocalRoom(n){ others = Array.from({length:n},(_,i)=>makeBot(i)); online=false; renderPlayers(); }
+
+// ===== blobs: denser, closer, high-value rarer =====
+let blobs=[], spawnTimer=0;
+const R_MIN=5,R_MAX=15, CAP=26;
+function spawnBlob(){
+  // pop up close to a random circle (biased to you) so they appear "here and there" around play
+  const anchor = (Math.random()<0.6 || others.length===0) ? me : others[Math.floor(Math.random()*others.length)];
+  const ang=Math.random()*Math.PI*2, dist=50+Math.random()*380;
+  const roll=Math.random();
+  const r = roll<0.70 ? 11+Math.random()*4 : roll<0.92 ? 8+Math.random()*3 : 5+Math.random()*3; // mostly big/cheap, rarely small/rich
+  const t=(r-R_MIN)/(R_MAX-R_MIN); const points=Math.round((50-t*40)/5)*5;
+  const life=(3.5+Math.random()*5.5)*1000;
+  const emoji = points>=40?'🤩':points>=20?'😋':'🍋';
+  blobs.push({ id:'b'+Math.floor(Math.random()*1e9), x:anchor.x+Math.cos(ang)*dist, y:anchor.y+Math.sin(ang)*dist, r, points, life, maxLife:life, emoji, hold:0, eaterId:null });
+}
+
+// ===== pops (graffiti) =====
+let pops=[];
+function popAt(sx,sy,points,emoji){ pops.push({x:sx,y:sy,vx:(Math.random()-.5)*14,vy:-46,rot:(Math.random()-.5)*.5,life:950,max:950,points,emoji}); }
+
+function resetGame(){ me.score=0; upg={drain:0}; recompute(); me.r=14; blobs=[]; pops=[]; spawnTimer=0; renderShop(); startLocalRoom(4); for(let i=0;i<8;i++) spawnBlob(); }
+
+function resize(){ dpr=Math.min(devicePixelRatio||1,2); W=innerWidth; H=innerHeight; canvas.width=W*dpr; canvas.height=H*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); cx=W/2; cy=H/2; }
+addEventListener('resize',resize); resize();
+
+// ===== steering =====
+let lastX=null,lastY=null;
+function pushStick(dx,dy){ handle.x+=dx*GAIN; handle.y+=dy*GAIN; const m=Math.hypot(handle.x,handle.y); if(m>MAX_R){handle.x=handle.x/m*MAX_R;handle.y=handle.y/m*MAX_R;} }
+addEventListener('mousemove',(e)=>{ mouse.x=e.clientX; mouse.y=e.clientY; if(mode!=='inverted')return; if(locked)pushStick(e.movementX,e.movementY); else{ if(lastX!==null)pushStick(e.clientX-lastX,e.clientY-lastY); lastX=e.clientX; lastY=e.clientY; } });
+
+// ===== mode toggle =====
+function enterInverted(){ if(mode==='inverted')return; mode='inverted'; handle.x=handle.y=0; lastX=lastY=null; sync(); flash('Inverted — push to steer · Esc/L to exit'); if(canvas.requestPointerLock){ const p=canvas.requestPointerLock({unadjustedMovement:true}); if(p&&p.catch)p.catch(()=>{locked=false;sync();}); } }
+function exitInverted(){ if(mode==='normal')return; mode='normal'; handle.x=handle.y=0; if(document.pointerLockElement)document.exitPointerLock(); locked=false; sync(); flash('Normal control restored'); }
+function toggle(){ mode==='inverted'?exitInverted():enterInverted(); }
+toggleBtn.addEventListener('click',()=>{ if(mode==='normal')enterInverted(); });
+addEventListener('keydown',(e)=>{ if(e.key==='l'||e.key==='L'){e.preventDefault();toggle();} else if(e.key==='Escape'){ toggle(); } else if(e.key===' '){e.preventDefault();buy('drain');} else if(e.key==='r'||e.key==='R')resetGame(); else if(e.key==='1')buy('drain'); });
+document.addEventListener('pointerlockchange',()=>{ locked=(document.pointerLockElement===canvas); if(!locked&&mode==='inverted'&&document.pointerLockElement===null)exitInverted(); sync(); });
+document.addEventListener('pointerlockerror',()=>{locked=false;sync();});
+let bt=null; function flash(t){ badge.textContent=t; badge.classList.add('show'); clearTimeout(bt); bt=setTimeout(()=>badge.classList.remove('show'),2400); }
+function sync(){ const inv=mode==='inverted'; canvas.className=inv?'inverted':'normal'; dock.classList.toggle('inverted',inv);
+  els.modeText.textContent=inv?'inverted · throttle':'normal control';
+  els.dockState.innerHTML=inv?'You throttle the <b>world</b>':'You control the <b>cursor</b>';
+  els.titleText.textContent=inv?'Stretch the velocity line to fly — but the bigger you grow, the slower you get. Eating blobs and draining smaller circles both make you larger.':'Your circle follows the cursor here. Eating grows you (and slows you). Enter inverted mode to fly and hunt.';
+  toggleBtn.innerHTML=inv?'Esc / L → normal control':'Enter inverted mode <kbd>Esc</kbd>';
+  if(!inv){ els.thr.textContent='—'; els.spd.textContent='0 px/s'; } }
+
+// ===== shop UI =====
+const shop=document.getElementById('shop');
+function renderShop(){ shop.innerHTML='<div class="shop-h">Upgrades · spend points</div>'+Object.keys(UP).map(k=>{ const u=UP[k],lv=upg[k],maxed=lv>=u.max,c=cost(k),afford=me.score>=c; const pips=Array.from({length:u.max},(_,i)=>`<span class="pip ${i<lv?'on':''}"></span>`).join(''); const cls=maxed?'maxed':(afford?'':'dim'); return `<div class="up ${cls}" data-k="${k}"><div class="row"><span class="nm">${u.name}</span><span class="hot">${u.hot}</span></div><div class="desc">${u.desc}</div><div class="row"><span class="pips">${pips}</span><span class="cost">${maxed?'MAX':c+' pts'}</span></div></div>`; }).join(''); shop.querySelectorAll('.up').forEach(el=>el.onclick=()=>buy(el.dataset.k)); }
+
+// ===== party UI + networking =====
+const pkStatus=id('pkStatus'), pkPlayers=id('pkPlayers'), pkCode=id('pkCode');
+function renderPlayers(){ pkPlayers.innerHTML=circles().sort((a,b)=>b.score-a.score).slice(0,6).map(c=>`<div class="pk-p"><span class="pk-sw" style="background:${c.color}"></span>${c.isPlayer?'You':c.name} · ${c.score}${c.isBot?' ·bot':''}</div>`).join(''); }
+function randCode(){ return Math.random().toString(36).slice(2,6).toUpperCase(); }
+id('pkCreate').onclick=()=>{ const code=randCode(); pkCode.value=code; connectRoom(code); };
+id('pkJoin').onclick=()=>{ const code=(pkCode.value||'').trim().toUpperCase(); if(code)connectRoom(code); };
+
+let net={socket:null,room:null,sendTimer:0};
+function connectRoom(code){
+  code=(code||'').trim().toUpperCase(); if(!code) return;
+  net.room=code;
+  const host=partyHost();
+  if(!host){ pkStatus.innerHTML='Room <b style="color:var(--reticle)">'+code+'</b> · offline (bots).<br>Open the PartyKit URL to go online.'; return; }
+  try{ if(net.socket) net.socket.close(); }catch{}
+  const proto=location.protocol==='https:'?'wss':'ws';
+  pkStatus.textContent='Connecting to '+code+'…';
+  try{
+    const ws=new WebSocket(`${proto}://${host}/parties/main/${encodeURIComponent(code)}`);
+    net.socket=ws;
+    ws.onopen=()=>{ online=true; others=[]; try{location.hash='room='+code;}catch{}
+      ws.send(JSON.stringify({t:'hello',name:'P'+Math.floor(Math.random()*900+100),color:COLORS[Math.floor(Math.random()*COLORS.length)]}));
+      pkStatus.innerHTML='Live in <b style="color:var(--reticle)">'+code+'</b> — share this URL'; };
+    ws.onmessage=(ev)=>onNet(ev.data);
+    ws.onclose=()=>{ if(online) pkStatus.textContent='Disconnected — back to bots'; online=false; startLocalRoom(4); };
+    ws.onerror=()=>{ pkStatus.textContent='Connection error — using bots'; };
+  }catch(err){ pkStatus.textContent='Connect failed — using bots'; online=false; startLocalRoom(4); }
+}
+function onNet(data){ let m; try{m=JSON.parse(data)}catch{return;}
+  if(m.t==='welcome'){ me.netId=m.id; if(m.blobs)blobs=m.blobs.map(b=>({...b,hold:0,eaterId:null})); }
+  else if(m.t==='players'){ others=m.list.filter(p=>p.id!==me.netId).map(p=>({...p,isRemote:true})); renderPlayers(); }
+  else if(m.t==='blobs'){ const keep=new Map(blobs.map(b=>[b.id,b])); blobs=m.list.map(b=>{ const e=keep.get(b.id); return e?Object.assign(e,{x:b.x,y:b.y,r:b.r,points:b.points,maxLife:b.maxLife,life:b.life}):{...b,hold:0,eaterId:null}; }); }
+}
+function netSend(dt){ if(!online||!net.socket)return; net.sendTimer-=dt; if(net.sendTimer<=0){ net.sendTimer=66; try{ net.socket.send(JSON.stringify({t:'state',x:me.x,y:me.y,r:me.r,score:me.score})); }catch{} } }
+
+// ===== bot AI =====
+function botThink(bot,dt){
+  let flee=null,prey=null;
+  for(const c of circles()){ if(c===bot)continue; const d=Math.hypot(c.x-bot.x,c.y-bot.y);
+    if(d<240){ if(c.r>bot.r+2){ if(!flee||d<flee.d)flee={c,d}; } else if(bot.r>c.r+2){ if(!prey||d<prey.d)prey={c,d}; } } }
+  if(flee){ bot.tx=bot.x+(bot.x-flee.c.x); bot.ty=bot.y+(bot.y-flee.c.y); }
+  else if(prey){ bot.tx=prey.c.x; bot.ty=prey.c.y; }
+  else { let nb=null,nd=1e9; for(const b of blobs){ const d=Math.hypot(b.x-bot.x,b.y-bot.y); if(d<nd){nd=d;nb=b;} }
+    if(nb&&nd<640){ bot.tx=nb.x; bot.ty=nb.y; }
+    else if(!bot.tx||Math.hypot(bot.tx-bot.x,bot.ty-bot.y)<40){ bot.tx=bot.x+(Math.random()-.5)*520; bot.ty=bot.y+(Math.random()-.5)*520; } }
+  const dx=bot.tx-bot.x, dy=bot.ty-bot.y, d=Math.hypot(dx,dy)||1, sp=Math.min(speedForRadius(bot.r)*0.9,d*2.5);
+  bot.x+=dx/d*sp*dt/1000; bot.y+=dy/d*sp*dt/1000;
+}
+
+// ===== PvP: overlap steals size =====
+function resolvePair(a,b,dt){   // offline: authoritative over both circles
+  const dx=b.x-a.x, dy=b.y-a.y, dist=Math.hypot(dx,dy);
+  const overlap=(a.r+b.r)-dist;
+  if(overlap<=0||dist<0.01||Math.abs(a.r-b.r)<0.6) return;
+  const big=a.r>b.r?a:b, small=a.r>b.r?b:a;
+  const rate=STEAL_RATE*(big.isPlayer?playerStealMult:1);
+  const steal=Math.min(small.r-MIN_R, rate*overlap*dt/1000);
+  if(steal<=0) return;
+  small.r-=steal; big.r+=steal*GROW_EFF;
+}
+function resolveSelf(other,dt){ // online: only ever modify OUR own circle, so both machines agree
+  const dx=other.x-me.x, dy=other.y-me.y, dist=Math.hypot(dx,dy);
+  const overlap=(me.r+other.r)-dist;
+  if(overlap<=0||dist<0.01||Math.abs(me.r-other.r)<0.6) return;
+  if(me.r>other.r){ const steal=Math.min(other.r-MIN_R, STEAL_RATE*playerStealMult*overlap*dt/1000); if(steal>0) me.r+=steal*GROW_EFF; }
+  else { const steal=Math.min(me.r-MIN_R, STEAL_RATE*overlap*dt/1000); if(steal>0) me.r-=steal; }
+}
+function resolvePvP(dt){
+  if(online){ for(const c of others) resolveSelf(c,dt); }
+  else { const cs=circles(); for(let i=0;i<cs.length;i++)for(let j=i+1;j<cs.length;j++) resolvePair(cs[i],cs[j],dt); }
+}
+
+// ===== loop =====
+let lastT=performance.now(), boardTimer=0;
+function update(now){
+  const dt=Math.min(now-lastT,50); lastT=now;
+
+  // fly
+  if(mode==='inverted'){ const m=Math.hypot(handle.x,handle.y); let eff=0; if(m>DEADZONE)eff=Math.min(1,(m-DEADZONE)/(MAX_R-DEADZONE)); speed=eff*speedForRadius(me.r); if(m>0){ camera.x+=(handle.x/m)*speed*dt/1000; camera.y+=(handle.y/m)*speed*dt/1000; } els.thr.textContent=Math.round(eff*100)+'%'; els.spd.textContent=Math.round(speed)+' px/s'; } else speed=0;
+  me.x=camera.x; me.y=camera.y;
+
+  // offline sim: spawn blobs + move bots
+  if(!online){
+    spawnTimer-=dt; if(spawnTimer<=0 && blobs.length<CAP){ spawnBlob(); spawnTimer=110+Math.random()*240; }
+    for(const b of others) if(b.isBot) botThink(b,dt);
+  }
+  netSend(dt);
+
+  // slow passive slim so nobody stays huge forever (growth from eating still dominates while feeding)
+  for(const c of circles()) if(c.r>MIN_R) c.r=Math.max(MIN_R, c.r - PASSIVE_DECAY*(c.r-MIN_R)*dt/1000);
+
+  // eat blobs — any circle; biggest overlapper wins; leaving resets (no partial credit)
+  const ppx=mode==='inverted'?cx:mouse.x, ppy=mode==='inverted'?cy:mouse.y; // player screen anchor for cursor mode
+  if(mode!=='inverted'){ me.x=camera.x+(mouse.x-cx); me.y=camera.y+(mouse.y-cy); } // in cursor mode the circle follows the pointer
+  for(let i=blobs.length-1;i>=0;i--){ const b=blobs[i];
+    let eater=null; for(const c of circles()){ if(Math.hypot(c.x-b.x,c.y-b.y)<c.r){ if(!eater||c.r>eater.r)eater=c; } }
+    if(eater){ if(b.eaterId===eater.id) b.hold+=dt; else{ b.eaterId=eater.id; b.hold=dt; }
+      const need=b.points*(eater.isPlayer?eatRate:14);
+      if(b.hold>=need){ eater.score+=b.points; eater.r=Math.sqrt(Math.PI*eater.r*eater.r + EAT_GROWTH*b.points)/Math.sqrt(Math.PI); if(eater.isPlayer){ const sx=cx+(b.x-camera.x), sy=cy+(b.y-camera.y); popAt(sx,sy,b.points,b.emoji); renderShop(); } if(online&&net.socket){ try{net.socket.send(JSON.stringify({t:'ate',id:b.id}))}catch{} } blobs.splice(i,1); continue; } }
+    else { b.eaterId=null; b.hold=0; }
+    if(!online){ b.life-=dt; if(b.life<=0){ blobs.splice(i,1); } }
+  }
+
+  // PvP overlaps
+  resolvePvP(dt);
+
+  // pops
+  for(let i=pops.length-1;i>=0;i--){ const p=pops[i]; p.life-=dt; p.x+=p.vx*dt/1000; p.y+=p.vy*dt/1000; if(p.life<=0)pops.splice(i,1); }
+
+  els.score.textContent=me.score; els.rsz.textContent=Math.round(me.r);
+  boardTimer-=dt; if(boardTimer<=0){ boardTimer=280; renderBoard(); renderPlayers(); }
+
+  draw(ppx,ppy); requestAnimationFrame(update);
+}
+
+function renderBoard(){ const top=circles().slice().sort((a,b)=>b.score-a.score).slice(0,4); id('board').innerHTML=top.map((c,i)=>`<div class="r" style="color:${c.color}">${i+1}. <b>${c.isPlayer?'You':c.name}</b> ${c.score}</div>`).join(''); }
+
+function draw(ppx,ppy){
+  ctx.clearRect(0,0,W,H); ctx.fillStyle=v('--bg'); ctx.fillRect(0,0,W,H);
+  const ox=-camera.x%64, oy=-camera.y%64; ctx.lineWidth=1;
+  for(let gx=ox;gx<W;gx+=64){ ctx.strokeStyle=Math.round((gx+camera.x)/64)%5===0?v('--grid-major'):v('--grid'); Line(gx,0,gx,H); }
+  for(let gy=oy;gy<H;gy+=64){ ctx.strokeStyle=Math.round((gy+camera.y)/64)%5===0?v('--grid-major'):v('--grid'); Line(0,gy,W,gy); }
+
+  // blobs
+  for(const b of blobs){ const sx=cx+(b.x-camera.x), sy=cy+(b.y-camera.y); if(sx<-60||sx>W+60||sy<-60||sy>H+60)continue;
+    const frac=Math.max(0,b.life/b.maxLife), eatFrac=Math.min(1,b.hold/(b.points*14)), dr=b.r*(1-0.45*eatFrac);
+    let ring=frac>0.5?'#6fcf97':frac>0.2?'#e8a33d':'#e07a6f';
+    ctx.fillStyle=v('--target'); Dot(sx,sy,dr); ctx.fillStyle='rgba(255,255,255,0.35)'; Dot(sx-dr*0.3,sy-dr*0.3,dr*0.32);
+    if(eatFrac>0){ ctx.fillStyle='rgba(244,237,224,0.9)'; ctx.beginPath(); ctx.moveTo(sx,sy); ctx.arc(sx,sy,dr,-Math.PI/2,-Math.PI/2+eatFrac*Math.PI*2); ctx.closePath(); ctx.fill(); }
+    if(!online){ ctx.strokeStyle=ring; ctx.lineWidth=2.2; ctx.beginPath(); ctx.arc(sx,sy,b.r+6,-Math.PI/2,-Math.PI/2+frac*Math.PI*2); ctx.stroke(); }
+  }
+
+  // other circles
+  for(const c of others){ const sx=cx+(c.x-camera.x), sy=cy+(c.y-camera.y); if(sx<-c.r-40||sx>W+c.r+40||sy<-c.r-40||sy>H+c.r+40)continue;
+    ctx.fillStyle=hexA(c.color,0.14); Dot(sx,sy,c.r); ctx.strokeStyle=c.color; ctx.lineWidth=2; Ring(sx,sy,c.r);
+    ctx.fillStyle=c.color; ctx.font='10px ui-monospace,monospace'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText((c.isPlayer?'You':c.name)+' · '+Math.round(c.score), sx, sy-c.r-9); }
+
+  // pops
+  for(const p of pops){ const a=Math.max(0,p.life/p.max), grow=p.points>0?(0.85+0.35*a):1; ctx.save(); ctx.globalAlpha=a; ctx.translate(p.x,p.y); ctx.rotate(p.rot); ctx.font=`${Math.round(24*grow)}px "Apple Color Emoji","Segoe UI Emoji",sans-serif`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(p.emoji,0,0); if(p.points>0){ ctx.font='bold 15px ui-monospace,monospace'; ctx.fillStyle=v('--pts'); ctx.fillText('+'+p.points,0,-22); } ctx.restore(); ctx.globalAlpha=1; }
+
+  // you
+  if(mode==='inverted'){ ctx.strokeStyle='rgba(127,178,184,0.14)'; ctx.lineWidth=1; Ring(cx,cy,MAX_R);
+    const hx=cx+handle.x, hy=cy+handle.y, f=Math.min(1,speed/Math.max(1,speedForRadius(me.r))); ctx.strokeStyle=`rgba(127,178,184,${0.4+f*0.5})`; ctx.lineWidth=1.5+f*2.5; Line(cx,cy,hx,hy); ctx.fillStyle=v('--throttle'); Dot(hx,hy,3.5+f*3);
+    drawMe(cx,cy);
+  } else { drawMe(ppx,ppy); }
+}
+function drawMe(x,y){ ctx.fillStyle='rgba(244,237,224,0.10)'; Dot(x,y,me.r); ctx.strokeStyle=v('--reticle'); ctx.lineWidth=1.8; Ring(x,y,me.r); ctx.fillStyle=v('--reticle'); Dot(x,y,1.8); }
+
+function v(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+function hexA(hex,a){ const h=hex.replace('#',''); const n=parseInt(h.length===3?h.split('').map(x=>x+x).join(''):h,16); return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},${a})`; }
+function Line(a,b,c,d){ctx.beginPath();ctx.moveTo(a,b);ctx.lineTo(c,d);ctx.stroke();}
+function Ring(x,y,r){ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.stroke();}
+function Dot(x,y,r){ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();}
+
+recompute(); renderShop(); resetGame();
+(function initParty(){ const host=partyHost(); const m=/room=([A-Za-z0-9]+)/.exec(location.hash);
+  if(host && m){ connectRoom(m[1]); }
+  else if(host){ pkStatus.innerHTML='Online ready · <b style="color:var(--reticle)">Create</b> or join a room'; }
+  else { pkStatus.innerHTML='Offline · bots.<br>Open the PartyKit URL to play with friends.'; }
+})();
+requestAnimationFrame(update);
+</script>
+</body>
+</html>
