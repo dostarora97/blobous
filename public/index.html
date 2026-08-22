@@ -69,6 +69,21 @@
   .lobby-url:hover{border-color:var(--accent)}
   #party .pk-sw{width:8px;height:8px;border-radius:50%;flex:none}
   @media (max-width:720px){#party,#title{display:none}} @media (max-width:640px){#shop{display:none}}
+  /* name entry + party lobby extras */
+  #nameEntry{position:fixed;inset:0;z-index:22;display:none;align-items:center;justify-content:center;background:rgba(12,26,29,.88);backdrop-filter:blur(5px)}
+  #nameEntry.show{display:flex}
+  .ne-card{background:var(--panel);border:1px solid var(--grid-major);border-radius:6px;padding:36px 44px;text-align:center;width:290px}
+  .ne-title{font-size:13px;letter-spacing:.34em;text-transform:uppercase;color:var(--reticle);font-weight:600;margin-bottom:6px}
+  .ne-sub{font-size:10px;color:var(--text-dim);letter-spacing:.08em;margin-bottom:20px}
+  .ne-inp{font:inherit;font-size:13px;background:rgba(0,0,0,.3);border:1px solid var(--grid-major);border-radius:3px;color:var(--reticle);padding:9px 12px;letter-spacing:.06em;width:100%;box-sizing:border-box;text-align:center;margin-bottom:14px}
+  .ne-inp:focus{outline:none;border-color:var(--accent)}
+  .ne-btn{font:inherit;font-size:11px;letter-spacing:.22em;text-transform:uppercase;font-weight:600;color:var(--bg);background:var(--reticle);border:none;border-radius:3px;padding:11px 32px;cursor:pointer}
+  .ne-btn:hover{background:#fff}
+  #pkLobby .pk-greeting{font-size:10px;color:var(--reticle);letter-spacing:.1em;margin-bottom:10px}
+  #pkLobby .pk-global{background:var(--acquired);color:var(--bg);font-weight:700;margin-bottom:8px}
+  #pkLobby .pk-global:hover{filter:brightness(1.12)}
+  #pkRoom .pk-leave{background:transparent;color:var(--text-dim);border:1px solid var(--grid-major)}
+  #pkRoom .pk-leave:hover{border-color:var(--text-dim);color:var(--reticle)}
 </style>
 </head>
 <body>
@@ -82,13 +97,39 @@
 
   <div id="party">
     <div class="pk-h">Party</div>
-    <div class="pk-status" id="pkStatus">Offline room · bots</div>
-    <div class="pk-row"><input id="pkCode" placeholder="room code" maxlength="12"><button id="pkJoin">Join</button></div>
-    <button class="pk-wide" id="pkCreate">Create room</button>
-    <div class="pk-players" id="pkPlayers"></div>
+    <!-- shown when not in a room -->
+    <div id="pkLobby">
+      <div class="pk-greeting" id="pkGreeting">Hello, Player</div>
+      <button class="pk-wide pk-global" id="pkGlobal">Join Global Room</button>
+      <button class="pk-wide" id="pkCreate">Create Private Room</button>
+      <div class="pk-row"><input id="pkCode" placeholder="room code" maxlength="12"><button id="pkJoin">Join</button></div>
+    </div>
+    <!-- shown when in a room -->
+    <div id="pkRoom" style="display:none">
+      <div class="pk-status" id="pkStatus"></div>
+      <button class="pk-wide pk-leave" id="pkLeave">Leave Room</button>
+      <div class="pk-players" id="pkPlayers"></div>
+    </div>
+  </div>
+
+  <div id="nameEntry">
+    <div class="ne-card">
+      <div class="ne-title">Blob Party</div>
+      <div class="ne-sub">Enter your name to play</div>
+      <input id="nameInput" class="ne-inp" placeholder="your name" maxlength="20" autocomplete="off" spellcheck="false">
+      <button id="nameSubmit" class="ne-btn">Play</button>
+    </div>
   </div>
 
   <div id="lobby">
+    <div class="lobby-card">
+      <div class="lobby-title">Waiting for players</div>
+      <div class="lobby-pips" id="lobbyPips"></div>
+      <div class="lobby-count" id="lobbyCount">1 of 2 players needed</div>
+      <div class="lobby-hint">Share this link with a friend:</div>
+      <div class="lobby-url" id="lobbyUrl" title="Click to copy"></div>
+    </div>
+  </div>
     <div class="lobby-card">
       <div class="lobby-title">Waiting for players</div>
       <div class="lobby-pips" id="lobbyPips"></div>
@@ -118,11 +159,41 @@ const PARTY_HOST = "";
 function partyHost(){ return PARTY_HOST || (location.protocol.indexOf('http')===0 ? location.host : ''); }
 // ===========================
 
+// ===== Player name =====
+const NAME_KEY = 'blobPartyName';
+let playerName = localStorage.getItem(NAME_KEY) || '';
+const nameEntryEl = document.getElementById('nameEntry');
+const nameInputEl = document.getElementById('nameInput');
+
+function submitName(){
+  const n = nameInputEl.value.trim().slice(0, 20);
+  if (!n) { nameInputEl.focus(); return; }
+  playerName = n;
+  localStorage.setItem(NAME_KEY, n);
+  nameEntryEl.classList.remove('show');
+  document.getElementById('pkGreeting').textContent = 'Hi, ' + playerName;
+  // If page was opened with a room hash, auto-join now that we have a name
+  if (typeof _pendingRoom === 'string' && _pendingRoom) {
+    const code = _pendingRoom; _pendingRoom = null;
+    if (code === 'GLOBAL') connectRoom(code);
+    else fetch(`/api/rooms/join/${code}`).then(r=>r.json()).then(d=>{ if(d.ok) connectRoom(code); }).catch(()=>{});
+  }
+}
+document.getElementById('nameSubmit').onclick = submitName;
+nameInputEl.addEventListener('keydown', e => { if (e.key === 'Enter') submitName(); });
+
+if (!playerName) {
+  nameEntryEl.classList.add('show');
+  nameInputEl.focus();
+} else {
+  document.getElementById('pkGreeting').textContent = 'Hi, ' + playerName;
+}
+
 let mode='normal', locked=false;
 let camera={x:0,y:0}, handle={x:0,y:0}, mouse={x:innerWidth/2,y:innerHeight/2}, speed=0;
 let dpr=1,W=0,H=0,cx=0,cy=0;
 const MAX_R=150, DEADZONE=10, GAIN=0.65;
-const WORLD_HALF=2000;
+const WORLD_HALF=1200;
 const isMobile=('ontouchstart' in window)||navigator.maxTouchPoints>0;
 let tiltCalibrated=false, lastOri={beta:60,gamma:0}, tiltNeutral={beta:60,gamma:0};
 const TILT_SCALE=MAX_R/50;
@@ -224,12 +295,24 @@ function renderShop(){ shop.innerHTML='<div class="shop-h">Upgrades · spend poi
 
 // ===== party UI + networking =====
 const pkStatus=id('pkStatus'), pkPlayers=id('pkPlayers'), pkCode=id('pkCode');
+const pkLobby=id('pkLobby'), pkRoom=id('pkRoom');
+
+function showLobbyPanel(){ pkLobby.style.display=''; pkRoom.style.display='none'; }
+function showRoomPanel(code){
+  pkLobby.style.display='none'; pkRoom.style.display='';
+  pkStatus.textContent = code==='GLOBAL' ? 'Global room — live' : `Room ${code} — live`;
+}
+
 function renderPlayers(){ pkPlayers.innerHTML=circles().sort((a,b)=>b.score-a.score).slice(0,6).map(c=>`<div class="pk-p"><span class="pk-sw" style="background:${c.color}"></span>${c.isPlayer?'You':c.name} · ${c.score}${c.isBot?' ·bot':''}</div>`).join(''); }
 function randCode(){ return Math.random().toString(36).slice(2,6).toUpperCase(); }
+
+id('pkGlobal').onclick=()=>{
+  if(!partyHost()){ pkStatus.textContent='Offline — open the deployed URL to play online'; return; }
+  connectRoom('GLOBAL');
+};
 id('pkCreate').onclick=async ()=>{
   const host=partyHost();
-  if(!host){ pkStatus.innerHTML='Offline · cannot create room.<br>Open the deployed URL to play online.'; return; }
-  pkStatus.textContent='Creating room…';
+  if(!host){ pkStatus.textContent='Offline — open the deployed URL to play online'; return; }
   try{
     const res=await fetch('/api/rooms/create',{method:'POST'});
     if(!res.ok) throw new Error('Server error');
@@ -240,14 +323,21 @@ id('pkCreate').onclick=async ()=>{
 id('pkJoin').onclick=async ()=>{
   const code=(pkCode.value||'').trim().toUpperCase(); if(!code)return;
   const host=partyHost();
-  if(!host){ pkStatus.innerHTML='Offline · cannot join room.<br>Open the deployed URL to play online.'; return; }
-  pkStatus.textContent='Checking room…';
+  if(!host){ pkStatus.textContent='Offline — open the deployed URL to play online'; return; }
   try{
     const res=await fetch(`/api/rooms/join/${code}`);
     const data=await res.json();
     if(!data.ok){ pkStatus.textContent=data.error||'Room not found'; return; }
     connectRoom(code);
   }catch(e){ pkStatus.textContent='Connection failed — try again'; }
+};
+id('pkLeave').onclick=()=>{
+  if(net.socket){ try{ net.socket.close(); }catch{} net.socket=null; }
+  online=false; gameActive=true;
+  lobbyEl.classList.remove('show');
+  showLobbyPanel();
+  startLocalRoom(4);
+  try{ history.replaceState(null,'',location.pathname); }catch{}
 };
 
 let net={socket:null,room:null,sendTimer:0};
@@ -263,10 +353,10 @@ function connectRoom(code){
     const ws=new WebSocket(`${proto}://${host}/parties/main/${encodeURIComponent(code)}`);
     net.socket=ws;
     ws.onopen=()=>{ online=true; others=[]; gameActive=false; try{location.hash='room='+code;}catch{}
-      ws.send(JSON.stringify({t:'hello',name:'P'+Math.floor(Math.random()*900+100),color:COLORS[Math.floor(Math.random()*COLORS.length)]}));
-      pkStatus.innerHTML='Live in <b style="color:var(--reticle)">'+code+'</b> — share this URL'; };
+      ws.send(JSON.stringify({t:'hello',name:playerName||('P'+Math.floor(Math.random()*900+100)),color:COLORS[Math.floor(Math.random()*COLORS.length)]}));
+      showRoomPanel(code); };
     ws.onmessage=(ev)=>onNet(ev.data);
-    ws.onclose=()=>{ if(online) pkStatus.textContent='Disconnected — back to bots'; online=false; gameActive=true; lobbyEl.classList.remove('show'); startLocalRoom(4); };
+    ws.onclose=()=>{ if(online) pkStatus.textContent='Disconnected — back to bots'; online=false; gameActive=true; lobbyEl.classList.remove('show'); showLobbyPanel(); startLocalRoom(4); };
     ws.onerror=()=>{ pkStatus.textContent='Connection error — using bots'; };
   }catch(err){ pkStatus.textContent='Connect failed — using bots'; online=false; startLocalRoom(4); }
 }
@@ -274,17 +364,18 @@ function onNet(data){ let m; try{m=JSON.parse(data)}catch{return;}
   if(m.t==='welcome'){ me.netId=m.id; if(m.blobs)blobs=m.blobs.map(b=>({...b,hold:0,eaterId:null})); }
   else if(m.t==='players'){ others=m.list.filter(p=>p.id!==me.netId).map(p=>({...p,isRemote:true})); renderPlayers(); }
   else if(m.t==='blobs'){ const keep=new Map(blobs.map(b=>[b.id,b])); blobs=m.list.filter(b=>!eatenIds.has(b.id)).map(b=>{ const e=keep.get(b.id); return e?Object.assign(e,{x:b.x,y:b.y,r:b.r,points:b.points,maxLife:b.maxLife,life:b.life}):{...b,hold:0,eaterId:null}; }); }
-  else if(m.t==='status'){ setLobby(m.state==='waiting', m.count); }
+  else if(m.t==='status'){ setLobby(m.state==='waiting', m.count, m.minPlayers||2); }
   else if(m.t==='error'){ pkStatus.textContent=m.message||'Server error'; net.socket?.close(); }
 }
 
 const lobbyEl=id('lobby'), lobbyCount=id('lobbyCount'), lobbyPips=id('lobbyPips'), lobbyUrl=id('lobbyUrl');
-function setLobby(waiting, count){
+function setLobby(waiting, count, needed){
+  needed = needed || 2;
   gameActive=!waiting;
   lobbyEl.classList.toggle('show', waiting);
   if(waiting){
-    lobbyCount.textContent=`${count} of ${2} players connected`;
-    lobbyPips.innerHTML=Array.from({length:2},(_,i)=>`<span class="lobby-pip${i<count?' on':''}"></span>`).join('');
+    lobbyCount.textContent=`${count} of ${needed} players connected`;
+    lobbyPips.innerHTML=Array.from({length:needed},(_,i)=>`<span class="lobby-pip${i<count?' on':''}"></span>`).join('');
     const url=location.href.split('#')[0]+(net.room?`#room=${net.room}`:'');
     lobbyUrl.textContent=url;
     lobbyUrl.onclick=()=>{ navigator.clipboard?.writeText(url).then(()=>flash('URL copied!')); };
@@ -379,9 +470,9 @@ function renderBoard(){ const top=circles().slice().sort((a,b)=>b.score-a.score)
 
 function draw(ppx,ppy){
   ctx.clearRect(0,0,W,H); ctx.fillStyle=v('--bg'); ctx.fillRect(0,0,W,H);
-  const ox=-camera.x%64, oy=-camera.y%64; ctx.lineWidth=1;
-  for(let gx=ox;gx<W;gx+=64){ ctx.strokeStyle=Math.round((gx+camera.x)/64)%5===0?v('--grid-major'):v('--grid'); Line(gx,0,gx,H); }
-  for(let gy=oy;gy<H;gy+=64){ ctx.strokeStyle=Math.round((gy+camera.y)/64)%5===0?v('--grid-major'):v('--grid'); Line(0,gy,W,gy); }
+  const ox=-camera.x%48, oy=-camera.y%48; ctx.lineWidth=1;
+  for(let gx=ox;gx<W;gx+=48){ ctx.strokeStyle=Math.round((gx+camera.x)/48)%5===0?v('--grid-major'):v('--grid'); Line(gx,0,gx,H); }
+  for(let gy=oy;gy<H;gy+=48){ ctx.strokeStyle=Math.round((gy+camera.y)/48)%5===0?v('--grid-major'):v('--grid'); Line(0,gy,W,gy); }
 
   // world boundary
   const bx=cx+(-WORLD_HALF-camera.x), by=cy+(-WORLD_HALF-camera.y);
@@ -406,7 +497,7 @@ function draw(ppx,ppy){
   for(const p of pops){ const a=Math.max(0,p.life/p.max), grow=p.points>0?(0.85+0.35*a):1; ctx.save(); ctx.globalAlpha=a; ctx.translate(p.x,p.y); ctx.rotate(p.rot); ctx.font=`${Math.round(24*grow)}px "Apple Color Emoji","Segoe UI Emoji",sans-serif`; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(p.emoji,0,0); if(p.points>0){ ctx.font='bold 15px ui-monospace,monospace'; ctx.fillStyle=v('--pts'); ctx.fillText('+'+p.points,0,-22); } ctx.restore(); ctx.globalAlpha=1; }
 
   // you
-  if(mode==='inverted'){ ctx.strokeStyle='rgba(127,178,184,0.14)'; ctx.lineWidth=1; Ring(cx,cy,MAX_R);
+  if(mode==='inverted'){
     const hx=cx+handle.x, hy=cy+handle.y, f=Math.min(1,speed/Math.max(1,speedForRadius(me.r))); ctx.strokeStyle=`rgba(127,178,184,${0.4+f*0.5})`; ctx.lineWidth=1.5+f*2.5; Line(cx,cy,hx,hy); ctx.fillStyle=v('--throttle'); Dot(hx,hy,3.5+f*3);
     drawMe(cx,cy);
   } else { drawMe(ppx,ppy); }
@@ -421,9 +512,17 @@ function Dot(x,y,r){ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();}
 
 recompute(); renderShop(); resetGame();
 (function initParty(){ const host=partyHost(); const m=/room=([A-Za-z0-9]+)/.exec(location.hash);
-  if(host && m){ connectRoom(m[1]); }
-  else if(host){ pkStatus.innerHTML='Online ready · <b style="color:var(--reticle)">Create</b> or join a room'; }
-  else { pkStatus.innerHTML='Offline · bots.<br>Open the PartyKit URL to play with friends.'; }
+  if(host && m){
+    const code=m[1].toUpperCase();
+    if(playerName){
+      // name already stored — join immediately
+      if(code==='GLOBAL'){ connectRoom(code); }
+      else { fetch(`/api/rooms/join/${code}`).then(r=>r.json()).then(d=>{ if(d.ok) connectRoom(code); else pkStatus.textContent=d.error||'Room not found'; }).catch(()=>{}); }
+    } else {
+      // name not yet entered — store code, join after name entry
+      window._pendingRoom = code;
+    }
+  } else if(!host){ pkStatus.textContent='Offline · bots. Open the deployed URL to play online.'; }
 })();
 
 // On mobile, auto-enter tilt mode on Android (no permission needed); iOS waits for button tap

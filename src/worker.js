@@ -22,7 +22,7 @@ import { DurableObject } from 'cloudflare:workers';
 const BLOB_CAP        = 40;
 const BLOB_R_MIN      = 5;
 const BLOB_R_MAX      = 15;
-const WORLD_DIST      = 1600;   // max blob spawn radius (matches client WORLD_HALF = 2000)
+const WORLD_DIST      = 1000;   // max blob spawn radius (matches client WORLD_HALF = 1200)
 const TICK_MS         = 125;    // 8 Hz game loop
 const MIN_PLAYERS     = 2;      // game doesn't start below this
 const ROOM_TTL_MS     = 4 * 60 * 60 * 1000;  // rooms expire after 4 hours
@@ -81,6 +81,7 @@ export class RoomRegistry extends DurableObject {
 
   /** Returns true if the code exists and has not expired. */
   roomExists(code) {
+    if (code === 'GLOBAL') return true;  // global room is always valid
     const rows = this.ctx.storage.sql.exec(
       `SELECT 1 FROM rooms WHERE code = ? AND created_at > ?`,
       code, Date.now() - ROOM_TTL_MS
@@ -120,8 +121,9 @@ export class RoomRegistry extends DurableObject {
  * join/leave so clients can show the waiting screen or resume the game.
  */
 export class BlobRoom extends DurableObject {
-  #players = new Map();  // playerId → player state
-  #blobs   = new Map();  // blobId   → blob
+  #players    = new Map();
+  #blobs      = new Map();
+  #minPlayers = MIN_PLAYERS;  // overridden to 1 for the GLOBAL room
 
   constructor(ctx, env) {
     super(ctx, env);
@@ -142,6 +144,10 @@ export class BlobRoom extends DurableObject {
     if (request.headers.get('Upgrade') !== 'websocket') {
       return new Response('WebSocket upgrade required', { status: 426 });
     }
+
+    // Set min players on first connection (GLOBAL room needs only 1 player to start)
+    const code = request.headers.get('X-Room-Code') ?? '';
+    if (code === 'GLOBAL') this.#minPlayers = 1;
 
     const [client, server] = Object.values(new WebSocketPair());
     const pid = crypto.randomUUID();
@@ -170,7 +176,7 @@ export class BlobRoom extends DurableObject {
     const player = this.#players.get(pid);
     switch (msg.t) {
       case 'hello':
-        player.name  = String(msg.name  ?? 'Player').slice(0, 12);
+        player.name  = String(msg.name  ?? 'Player').slice(0, 20);
         player.color = String(msg.color ?? player.color);
         break;
       case 'state':
@@ -200,7 +206,7 @@ export class BlobRoom extends DurableObject {
   async alarm() {
     const sockets = this.ctx.getWebSockets();
     if (sockets.length === 0) return;              // room empty, expire alarm
-    if (this.#players.size < MIN_PLAYERS) return;  // not enough players; don't reschedule
+    if (this.#players.size < this.#minPlayers) return;  // not enough players; don't reschedule
 
     // Advance blob simulation
     while (this.#blobs.size < BLOB_CAP && Math.random() < 0.2) {
@@ -241,8 +247,8 @@ export class BlobRoom extends DurableObject {
 
   async #broadcastStatus() {
     const count = this.#players.size;
-    const state = count >= MIN_PLAYERS ? 'playing' : 'waiting';
-    const msg   = JSON.stringify({ t: 'status', state, count });
+    const state = count >= this.#minPlayers ? 'playing' : 'waiting';
+    const msg   = JSON.stringify({ t: 'status', state, count, minPlayers: this.#minPlayers });
     for (const ws of this.ctx.getWebSockets()) {
       try { ws.send(msg); } catch {}
     }
@@ -306,7 +312,11 @@ export default {
         return new Response(null, { status: 101, webSocket: client });
       }
 
-      return env.BLOB_ROOM.get(env.BLOB_ROOM.idFromName(code)).fetch(request);
+      const headers = new Headers(request.headers);
+      headers.set('X-Room-Code', code);
+      return env.BLOB_ROOM.get(env.BLOB_ROOM.idFromName(code)).fetch(
+        new Request(request, { headers })
+      );
     }
 
     // ── Static assets (public/index.html etc.) ──────────────────────────────
