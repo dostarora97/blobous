@@ -445,7 +445,7 @@ function update(now){
   if(mode==='normal'){ me.x=camera.x+(mouse.x-cx); me.y=camera.y+(mouse.y-cy); } // in cursor mode the circle follows the pointer
   clampToWorld(me); if(mode==='inverted'||mode==='tilt'){ camera.x=me.x; camera.y=me.y; }
   for(let i=blobs.length-1;i>=0;i--){ const b=blobs[i];
-    let eater=null; if(gameActive){ for(const c of circles()){ if(Math.hypot(c.x-b.x,c.y-b.y)<c.r){ if(!eater||c.r>eater.r)eater=c; } } }
+    let eater=null; if(gameActive){ for(const c of circles()){ if(Math.hypot(c.x-b.x,c.y-b.y)<c.r+b.r){ if(!eater||c.r>eater.r)eater=c; } } }
     if(eater){ if(b.eaterId===eater.id) b.hold+=dt; else{ b.eaterId=eater.id; b.hold=dt; }
       const need=b.points*(eater.isPlayer?eatRate:22);
       if(b.hold>=need){ eater.score+=b.points; eater.r=Math.sqrt(Math.PI*eater.r*eater.r + EAT_GROWTH*b.points)/Math.sqrt(Math.PI); if(eater.isPlayer){ const sx=cx+(b.x-camera.x), sy=cy+(b.y-camera.y); popAt(sx,sy,b.points,b.emoji||(b.points>=40?'🤩':b.points>=20?'😋':'🍋')); renderShop(); } if(online&&net.socket){ try{net.socket.send(JSON.stringify({t:'ate',id:b.id}))}catch{} eatenIds.add(b.id); setTimeout(()=>eatenIds.delete(b.id),1000); } blobs.splice(i,1); continue; } }
