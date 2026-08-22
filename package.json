@@ -7,10 +7,12 @@
   "scripts": {
     "dev": "partykit dev --port 4200",
     "lan": "node server-lan.js",
-    "deploy": "partykit deploy"
+    "deploy": "wrangler deploy",
+    "cf:dev": "wrangler dev"
   },
   "devDependencies": {
-    "partykit": "latest"
+    "partykit": "latest",
+    "wrangler": "^4.0.0"
   },
   "allowScripts": {
     "esbuild@0.21.5": true,

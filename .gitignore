@@ -1,2 +1,4 @@
 .cloudflare.env
 node_modules/
+.partykit/
+.wrangler/
