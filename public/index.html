@@ -100,6 +100,10 @@ let mode='normal', locked=false;
 let camera={x:0,y:0}, handle={x:0,y:0}, mouse={x:innerWidth/2,y:innerHeight/2}, speed=0;
 let dpr=1,W=0,H=0,cx=0,cy=0;
 const MAX_R=150, DEADZONE=10, GAIN=0.65;
+const WORLD_HALF=2000;
+const isMobile=('ontouchstart' in window)||navigator.maxTouchPoints>0;
+let tiltCalibrated=false, lastOri={beta:60,gamma:0}, tiltNeutral={beta:60,gamma:0};
+const TILT_SCALE=MAX_R/22;
 
 // upgradable stat — the only thing points buy now
 let eatRate=14, playerStealMult=1;
@@ -115,6 +119,7 @@ const NAMES=['Nyx','Orbit','Pax','Quill','Rho','Sol','Vega','Wisp'];
 const MIN_R=8, STEAL_RATE=0.5, GROW_EFF=0.75, EAT_GROWTH=6, PASSIVE_DECAY=0.04;
 const SPEED_BASE=520, SPEED_REF=14, SPEED_EXP=0.55, SPEED_FLOOR=150;  // speed falls off as radius grows
 function speedForRadius(r){ return Math.max(SPEED_FLOOR, SPEED_BASE*Math.pow(SPEED_REF/r, SPEED_EXP)); }
+function clampToWorld(obj){ const hw=WORLD_HALF-obj.r; obj.x=Math.max(-hw,Math.min(hw,obj.x)); obj.y=Math.max(-hw,Math.min(hw,obj.y)); }
 const me={ id:'me', name:'You', x:0,y:0, r:14, score:0, color:'#f4ede0', isPlayer:true };
 let others=[];                         // bots offline, remote players online
 let online=false;
@@ -157,17 +162,38 @@ addEventListener('mousemove',(e)=>{ mouse.x=e.clientX; mouse.y=e.clientY; if(mod
 // ===== mode toggle =====
 function enterInverted(){ if(mode==='inverted')return; mode='inverted'; handle.x=handle.y=0; lastX=lastY=null; sync(); flash('Inverted — push to steer · Esc/L to exit'); if(canvas.requestPointerLock){ const p=canvas.requestPointerLock({unadjustedMovement:true}); if(p&&p.catch)p.catch(()=>{locked=false;sync();}); } }
 function exitInverted(){ if(mode==='normal')return; mode='normal'; handle.x=handle.y=0; if(document.pointerLockElement)document.exitPointerLock(); locked=false; sync(); flash('Normal control restored'); }
-function toggle(){ mode==='inverted'?exitInverted():enterInverted(); }
-toggleBtn.addEventListener('click',()=>{ if(mode==='normal')enterInverted(); });
-addEventListener('keydown',(e)=>{ if(e.key==='l'||e.key==='L'){e.preventDefault();toggle();} else if(e.key==='Escape'){ toggle(); } else if(e.key===' '){e.preventDefault();buy('drain');} else if(e.key==='r'||e.key==='R')resetGame(); else if(e.key==='1')buy('drain'); });
+
+// ===== tilt mode (mobile accelerometer) =====
+function handleOrientation(e){
+  if(mode!=='tilt') return;
+  const beta=e.beta??60, gamma=e.gamma??0;
+  lastOri={beta,gamma};
+  if(!tiltCalibrated){ tiltNeutral={beta,gamma}; tiltCalibrated=true; flash('Tilt calibrated · tap Recalibrate to reset'); }
+  const dx=(gamma-tiltNeutral.gamma)*TILT_SCALE, dy=(beta-tiltNeutral.beta)*TILT_SCALE;
+  const m=Math.hypot(dx,dy);
+  if(m>MAX_R){ handle.x=dx/m*MAX_R; handle.y=dy/m*MAX_R; } else { handle.x=dx; handle.y=dy; }
+}
+function recalibrateTilt(){ tiltNeutral={...lastOri}; flash('Recalibrated'); }
+function enterTilt(){
+  if(mode==='tilt'){ recalibrateTilt(); return; }
+  const activate=()=>{ window.addEventListener('deviceorientation',handleOrientation); mode='tilt'; handle.x=handle.y=0; tiltCalibrated=false; if(document.pointerLockElement)document.exitPointerLock(); locked=false; sync(); };
+  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    DeviceOrientationEvent.requestPermission().then(s=>{ if(s==='granted') activate(); else flash('Tilt permission denied'); }).catch(()=>flash('Tilt permission denied'));
+  } else activate();
+}
+function exitTilt(){ if(mode!=='tilt') return; mode='normal'; handle.x=handle.y=0; sync(); flash('Normal control restored'); }
+
+function toggle(){ if(mode==='inverted') exitInverted(); else if(mode==='tilt') exitTilt(); else enterInverted(); }
+toggleBtn.addEventListener('click',()=>{ if(isMobile){ enterTilt(); } else if(mode==='normal') enterInverted(); });
+addEventListener('keydown',(e)=>{ if(e.key==='l'||e.key==='L'){e.preventDefault();toggle();} else if(e.key==='Escape'){ toggle(); } else if(e.key===' '){e.preventDefault();buy('drain');} else if(e.key==='r'||e.key==='R')resetGame(); else if(e.key==='1')buy('drain'); else if(e.key==='t'||e.key==='T'){e.preventDefault(); if(mode==='tilt') exitTilt(); else enterTilt();} });
 document.addEventListener('pointerlockchange',()=>{ locked=(document.pointerLockElement===canvas); if(!locked&&mode==='inverted'&&document.pointerLockElement===null)exitInverted(); sync(); });
 document.addEventListener('pointerlockerror',()=>{locked=false;sync();});
 let bt=null; function flash(t){ badge.textContent=t; badge.classList.add('show'); clearTimeout(bt); bt=setTimeout(()=>badge.classList.remove('show'),2400); }
-function sync(){ const inv=mode==='inverted'; canvas.className=inv?'inverted':'normal'; dock.classList.toggle('inverted',inv);
-  els.modeText.textContent=inv?'inverted · throttle':'normal control';
-  els.dockState.innerHTML=inv?'You throttle the <b>world</b>':'You control the <b>cursor</b>';
-  els.titleText.textContent=inv?'Stretch the velocity line to fly — but the bigger you grow, the slower you get. Eating blobs and draining smaller circles both make you larger.':'Your circle follows the cursor here. Eating grows you (and slows you). Enter inverted mode to fly and hunt.';
-  toggleBtn.innerHTML=inv?'Esc / L → normal control':'Enter inverted mode <kbd>Esc</kbd>';
+function sync(){ const inv=mode==='inverted'||mode==='tilt'; const tilt=mode==='tilt'; canvas.className=inv?'inverted':'normal'; dock.classList.toggle('inverted',inv);
+  els.modeText.textContent=tilt?'tilt · accelerometer':inv?'inverted · throttle':'normal control';
+  els.dockState.innerHTML=tilt?'Tilt to fly · <b>tap to recalibrate</b>':inv?'You throttle the <b>world</b>':'You control the <b>cursor</b>';
+  els.titleText.textContent=tilt?'Tilt your phone to fly. Bigger = slower. Eat blobs to grow; overlap a smaller circle to drain it.':inv?'Stretch the velocity line to fly — but the bigger you grow, the slower you get. Eating blobs and draining smaller circles both make you larger.':'Your circle follows the cursor here. Eating grows you (and slows you). Enter inverted mode to fly and hunt.';
+  toggleBtn.innerHTML=tilt?'Recalibrate':inv?'Esc / L → normal control':isMobile?'Enable tilt control':'Enter inverted mode <kbd>Esc</kbd>';
   if(!inv){ els.thr.textContent='—'; els.spd.textContent='0 px/s'; } }
 
 // ===== shop UI =====
@@ -251,13 +277,13 @@ function update(now){
   const dt=Math.min(now-lastT,50); lastT=now;
 
   // fly
-  if(mode==='inverted'){ const m=Math.hypot(handle.x,handle.y); let eff=0; if(m>DEADZONE)eff=Math.min(1,(m-DEADZONE)/(MAX_R-DEADZONE)); speed=eff*speedForRadius(me.r); if(m>0){ camera.x+=(handle.x/m)*speed*dt/1000; camera.y+=(handle.y/m)*speed*dt/1000; } els.thr.textContent=Math.round(eff*100)+'%'; els.spd.textContent=Math.round(speed)+' px/s'; } else speed=0;
+  if(mode==='inverted'||mode==='tilt'){ const m=Math.hypot(handle.x,handle.y); let eff=0; if(m>DEADZONE)eff=Math.min(1,(m-DEADZONE)/(MAX_R-DEADZONE)); speed=eff*speedForRadius(me.r); if(m>0){ camera.x+=(handle.x/m)*speed*dt/1000; camera.y+=(handle.y/m)*speed*dt/1000; } els.thr.textContent=Math.round(eff*100)+'%'; els.spd.textContent=Math.round(speed)+' px/s'; } else speed=0;
   me.x=camera.x; me.y=camera.y;
 
   // offline sim: spawn blobs + move bots
   if(!online){
     spawnTimer-=dt; if(spawnTimer<=0 && blobs.length<CAP){ spawnBlob(); spawnTimer=110+Math.random()*240; }
-    for(const b of others) if(b.isBot) botThink(b,dt);
+    for(const b of others) if(b.isBot){ botThink(b,dt); clampToWorld(b); }
   }
   netSend(dt);
 
@@ -265,13 +291,14 @@ function update(now){
   for(const c of circles()) if(c.r>MIN_R) c.r=Math.max(MIN_R, c.r - PASSIVE_DECAY*(c.r-MIN_R)*dt/1000);
 
   // eat blobs — any circle; biggest overlapper wins; leaving resets (no partial credit)
-  const ppx=mode==='inverted'?cx:mouse.x, ppy=mode==='inverted'?cy:mouse.y; // player screen anchor for cursor mode
-  if(mode!=='inverted'){ me.x=camera.x+(mouse.x-cx); me.y=camera.y+(mouse.y-cy); } // in cursor mode the circle follows the pointer
+  const ppx=(mode==='inverted'||mode==='tilt')?cx:mouse.x, ppy=(mode==='inverted'||mode==='tilt')?cy:mouse.y; // player screen anchor for cursor mode
+  if(mode==='normal'){ me.x=camera.x+(mouse.x-cx); me.y=camera.y+(mouse.y-cy); } // in cursor mode the circle follows the pointer
+  clampToWorld(me); if(mode==='inverted'||mode==='tilt'){ camera.x=me.x; camera.y=me.y; }
   for(let i=blobs.length-1;i>=0;i--){ const b=blobs[i];
     let eater=null; for(const c of circles()){ if(Math.hypot(c.x-b.x,c.y-b.y)<c.r){ if(!eater||c.r>eater.r)eater=c; } }
     if(eater){ if(b.eaterId===eater.id) b.hold+=dt; else{ b.eaterId=eater.id; b.hold=dt; }
       const need=b.points*(eater.isPlayer?eatRate:14);
-      if(b.hold>=need){ eater.score+=b.points; eater.r=Math.sqrt(Math.PI*eater.r*eater.r + EAT_GROWTH*b.points)/Math.sqrt(Math.PI); if(eater.isPlayer){ const sx=cx+(b.x-camera.x), sy=cy+(b.y-camera.y); popAt(sx,sy,b.points,b.emoji); renderShop(); } if(online&&net.socket){ try{net.socket.send(JSON.stringify({t:'ate',id:b.id}))}catch{} } blobs.splice(i,1); continue; } }
+      if(b.hold>=need){ eater.score+=b.points; eater.r=Math.sqrt(Math.PI*eater.r*eater.r + EAT_GROWTH*b.points)/Math.sqrt(Math.PI); if(eater.isPlayer){ const sx=cx+(b.x-camera.x), sy=cy+(b.y-camera.y); popAt(sx,sy,b.points,b.emoji||(b.points>=40?'🤩':b.points>=20?'😋':'🍋')); renderShop(); } if(online&&net.socket){ try{net.socket.send(JSON.stringify({t:'ate',id:b.id}))}catch{} } blobs.splice(i,1); continue; } }
     else { b.eaterId=null; b.hold=0; }
     if(!online){ b.life-=dt; if(b.life<=0){ blobs.splice(i,1); } }
   }
@@ -296,13 +323,18 @@ function draw(ppx,ppy){
   for(let gx=ox;gx<W;gx+=64){ ctx.strokeStyle=Math.round((gx+camera.x)/64)%5===0?v('--grid-major'):v('--grid'); Line(gx,0,gx,H); }
   for(let gy=oy;gy<H;gy+=64){ ctx.strokeStyle=Math.round((gy+camera.y)/64)%5===0?v('--grid-major'):v('--grid'); Line(0,gy,W,gy); }
 
+  // world boundary
+  const bx=cx+(-WORLD_HALF-camera.x), by=cy+(-WORLD_HALF-camera.y);
+  ctx.save(); ctx.lineWidth=3; ctx.strokeStyle='rgba(127,178,184,0.55)'; ctx.strokeRect(bx,by,WORLD_HALF*2,WORLD_HALF*2);
+  ctx.lineWidth=12; ctx.strokeStyle='rgba(127,178,184,0.10)'; ctx.strokeRect(bx,by,WORLD_HALF*2,WORLD_HALF*2); ctx.restore();
+
   // blobs
   for(const b of blobs){ const sx=cx+(b.x-camera.x), sy=cy+(b.y-camera.y); if(sx<-60||sx>W+60||sy<-60||sy>H+60)continue;
     const frac=Math.max(0,b.life/b.maxLife), eatFrac=Math.min(1,b.hold/(b.points*14)), dr=b.r*(1-0.45*eatFrac);
     let ring=frac>0.5?'#6fcf97':frac>0.2?'#e8a33d':'#e07a6f';
     ctx.fillStyle=v('--target'); Dot(sx,sy,dr); ctx.fillStyle='rgba(255,255,255,0.35)'; Dot(sx-dr*0.3,sy-dr*0.3,dr*0.32);
     if(eatFrac>0){ ctx.fillStyle='rgba(244,237,224,0.9)'; ctx.beginPath(); ctx.moveTo(sx,sy); ctx.arc(sx,sy,dr,-Math.PI/2,-Math.PI/2+eatFrac*Math.PI*2); ctx.closePath(); ctx.fill(); }
-    if(!online){ ctx.strokeStyle=ring; ctx.lineWidth=2.2; ctx.beginPath(); ctx.arc(sx,sy,b.r+6,-Math.PI/2,-Math.PI/2+frac*Math.PI*2); ctx.stroke(); }
+    ctx.strokeStyle=ring; ctx.lineWidth=2.2; ctx.beginPath(); ctx.arc(sx,sy,b.r+6,-Math.PI/2,-Math.PI/2+frac*Math.PI*2); ctx.stroke();
   }
 
   // other circles
@@ -333,6 +365,12 @@ recompute(); renderShop(); resetGame();
   else if(host){ pkStatus.innerHTML='Online ready · <b style="color:var(--reticle)">Create</b> or join a room'; }
   else { pkStatus.innerHTML='Offline · bots.<br>Open the PartyKit URL to play with friends.'; }
 })();
+
+// On mobile, auto-enter tilt mode on Android (no permission needed); iOS waits for button tap
+if(isMobile && typeof DeviceOrientationEvent!=='undefined' && typeof DeviceOrientationEvent.requestPermission!=='function'){
+  window.addEventListener('deviceorientation',handleOrientation);
+  mode='tilt'; tiltCalibrated=false; sync();
+}
 requestAnimationFrame(update);
 </script>
 </body>

@@ -20,7 +20,7 @@ function spawnBlob() {
   const t = (r - R_MIN) / (R_MAX - R_MIN);
   const points = Math.round((50 - t*40)/5)*5;
   const life = (3.5 + Math.random()*5.5) * 1000;
-  const ang = Math.random()*Math.PI*2, dist = Math.random()*900;   // shared world, centered on origin
+  const ang = Math.random()*Math.PI*2, dist = Math.random()*1600;
   return { id: 'b'+Math.floor(Math.random()*1e9), x: Math.cos(ang)*dist, y: Math.sin(ang)*dist, r, points, life, maxLife: life };
 }
 
