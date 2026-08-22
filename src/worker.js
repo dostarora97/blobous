@@ -209,7 +209,7 @@ export class BlobRoom extends DurableObject {
     if (this.#players.size < this.#minPlayers) return;  // not enough players; don't reschedule
 
     // Advance blob simulation
-    while (this.#blobs.size < BLOB_CAP && Math.random() < 0.2) {
+    while (this.#blobs.size < BLOB_CAP && Math.random() < 0.4) {
       const b = spawnBlob();
       this.#blobs.set(b.id, b);
     }

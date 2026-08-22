@@ -425,7 +425,7 @@ function update(now){
 
   // offline sim: spawn blobs + move bots
   if(!online){
-    spawnTimer-=dt; if(spawnTimer<=0 && blobs.length<CAP){ spawnBlob(); spawnTimer=450+Math.random()*550; }
+    spawnTimer-=dt; if(spawnTimer<=0 && blobs.length<CAP){ spawnBlob(); spawnTimer=180+Math.random()*280; }
     for(const b of others) if(b.isBot){ botThink(b,dt); clampToWorld(b); }
   }
   netSend(dt);
