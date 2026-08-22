@@ -125,20 +125,20 @@ const MAX_R=150, DEADZONE=10, GAIN=0.65;
 const WORLD_HALF=2000;
 const isMobile=('ontouchstart' in window)||navigator.maxTouchPoints>0;
 let tiltCalibrated=false, lastOri={beta:60,gamma:0}, tiltNeutral={beta:60,gamma:0};
-const TILT_SCALE=MAX_R/22;
+const TILT_SCALE=MAX_R/50;
 
 // upgradable stat — the only thing points buy now
-let eatRate=14, playerStealMult=1;
+let eatRate=22, playerStealMult=1;
 let upg={drain:0};
 const UP={ drain:{name:'Drain',hot:'Space',max:8,base:45,desc:'Eat blobs & drain other circles faster'} };
-function recompute(){ eatRate=14*Math.pow(0.82,upg.drain); playerStealMult=1+0.35*upg.drain; }
+function recompute(){ eatRate=22*Math.pow(0.82,upg.drain); playerStealMult=1+0.35*upg.drain; }
 function cost(k){ return Math.round(UP[k].base*Math.pow(1.7,upg[k])); }
 function buy(k){ if(upg[k]>=UP[k].max){flash(UP[k].name+' is maxed');return;} const c=cost(k); if(me.score<c){flash('Need '+c+' points');return;} me.score-=c; upg[k]++; recompute(); renderShop(); flash(UP[k].name+' → level '+upg[k]); }
 
 // ===== circles: you + others (bots or remote players) =====
 const COLORS=['#e8a33d','#6fcf97','#e07a6f','#b08fe0','#f4d47a','#7fb2b8'];
 const NAMES=['Nyx','Orbit','Pax','Quill','Rho','Sol','Vega','Wisp'];
-const MIN_R=8, STEAL_RATE=0.5, GROW_EFF=0.75, EAT_GROWTH=6, PASSIVE_DECAY=0.04;
+const MIN_R=8, STEAL_RATE=0.5, GROW_EFF=0.75, EAT_GROWTH=15, PASSIVE_DECAY=0.04;
 const SPEED_BASE=520, SPEED_REF=14, SPEED_EXP=0.55, SPEED_FLOOR=150;  // speed falls off as radius grows
 function speedForRadius(r){ return Math.max(SPEED_FLOOR, SPEED_BASE*Math.pow(SPEED_REF/r, SPEED_EXP)); }
 function clampToWorld(obj){ const hw=WORLD_HALF-obj.r; obj.x=Math.max(-hw,Math.min(hw,obj.x)); obj.y=Math.max(-hw,Math.min(hw,obj.y)); }
@@ -340,7 +340,7 @@ function update(now){
 
   // offline sim: spawn blobs + move bots
   if(!online){
-    spawnTimer-=dt; if(spawnTimer<=0 && blobs.length<CAP){ spawnBlob(); spawnTimer=110+Math.random()*240; }
+    spawnTimer-=dt; if(spawnTimer<=0 && blobs.length<CAP){ spawnBlob(); spawnTimer=450+Math.random()*550; }
     for(const b of others) if(b.isBot){ botThink(b,dt); clampToWorld(b); }
   }
   netSend(dt);
@@ -357,7 +357,7 @@ function update(now){
   for(let i=blobs.length-1;i>=0;i--){ const b=blobs[i];
     let eater=null; if(gameActive){ for(const c of circles()){ if(Math.hypot(c.x-b.x,c.y-b.y)<c.r){ if(!eater||c.r>eater.r)eater=c; } } }
     if(eater){ if(b.eaterId===eater.id) b.hold+=dt; else{ b.eaterId=eater.id; b.hold=dt; }
-      const need=b.points*(eater.isPlayer?eatRate:14);
+      const need=b.points*(eater.isPlayer?eatRate:22);
       if(b.hold>=need){ eater.score+=b.points; eater.r=Math.sqrt(Math.PI*eater.r*eater.r + EAT_GROWTH*b.points)/Math.sqrt(Math.PI); if(eater.isPlayer){ const sx=cx+(b.x-camera.x), sy=cy+(b.y-camera.y); popAt(sx,sy,b.points,b.emoji||(b.points>=40?'🤩':b.points>=20?'😋':'🍋')); renderShop(); } if(online&&net.socket){ try{net.socket.send(JSON.stringify({t:'ate',id:b.id}))}catch{} eatenIds.add(b.id); setTimeout(()=>eatenIds.delete(b.id),1000); } blobs.splice(i,1); continue; } }
     else { b.eaterId=null; b.hold=0; }
     if(!online){ b.life-=dt; if(b.life<=0){ blobs.splice(i,1); } }
