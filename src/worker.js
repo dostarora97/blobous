@@ -37,7 +37,7 @@ function spawnBlob() {
                             :  5 + Math.random() * 3;
   const t      = (r - BLOB_R_MIN) / (BLOB_R_MAX - BLOB_R_MIN);
   const points = Math.round((50 - t * 40) / 5) * 5;
-  const life   = (3.5 + Math.random() * 5.5) * 1000;
+  const life   = (7 + Math.random() * 10) * 1000;
   const ang    = Math.random() * Math.PI * 2;
   const dist   = Math.random() * WORLD_DIST;
   return { id: crypto.randomUUID(), x: Math.cos(ang) * dist, y: Math.sin(ang) * dist, r, points, life, maxLife: life };

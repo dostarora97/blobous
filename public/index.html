@@ -231,7 +231,7 @@ function spawnBlob(){
   const roll=Math.random();
   const r = roll<0.70 ? 11+Math.random()*4 : roll<0.92 ? 8+Math.random()*3 : 5+Math.random()*3; // mostly big/cheap, rarely small/rich
   const t=(r-R_MIN)/(R_MAX-R_MIN); const points=Math.round((50-t*40)/5)*5;
-  const life=(3.5+Math.random()*5.5)*1000;
+  const life=(7+Math.random()*10)*1000;
   const emoji = points>=40?'🤩':points>=20?'😋':'🍋';
   blobs.push({ id:'b'+Math.floor(Math.random()*1e9), x:anchor.x+Math.cos(ang)*dist, y:anchor.y+Math.sin(ang)*dist, r, points, life, maxLife:life, emoji, hold:0, eaterId:null });
 }
@@ -348,7 +348,7 @@ function connectRoom(code){
   try{
     const ws=new WebSocket(`${proto}://${host}/parties/main/${encodeURIComponent(code)}`);
     net.socket=ws;
-    ws.onopen=()=>{ online=true; others=[]; gameActive=false; try{location.hash='room='+code;}catch{}
+    ws.onopen=()=>{ online=true; others=[]; gameActive=(code==='GLOBAL'); try{location.hash='room='+code;}catch{}
       ws.send(JSON.stringify({t:'hello',name:playerName||('P'+Math.floor(Math.random()*900+100)),color:COLORS[Math.floor(Math.random()*COLORS.length)]}));
       showRoomPanel(code); };
     ws.onmessage=(ev)=>onNet(ev.data);
@@ -367,6 +367,8 @@ function onNet(data){ let m; try{m=JSON.parse(data)}catch{return;}
 const lobbyEl=id('lobby'), lobbyCount=id('lobbyCount'), lobbyPips=id('lobbyPips'), lobbyUrl=id('lobbyUrl');
 function setLobby(waiting, count, needed){
   needed = needed || 2;
+  // Global room (minPlayers=1): never show waiting screen — start immediately
+  if(needed <= 1){ gameActive=true; lobbyEl.classList.remove('show'); return; }
   gameActive=!waiting;
   lobbyEl.classList.toggle('show', waiting);
   if(waiting){
