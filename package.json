@@ -3,20 +3,18 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "A little agar-style browser game with pointer-lock flight and PartyKit multiplayer.",
+  "description": "Agar-style browser game with Cloudflare Workers + Durable Objects multiplayer.",
   "scripts": {
-    "dev": "partykit dev --port 4200",
     "lan": "node server-lan.js",
-    "deploy": "wrangler deploy",
-    "cf:dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "partykit": "latest",
     "wrangler": "^4.0.0"
   },
   "allowScripts": {
-    "esbuild@0.21.5": true,
-    "workerd@1.20240718.0": true,
+    "esbuild@0.28.1": true,
+    "workerd@1.20260820.1": true,
     "fsevents@2.3.3": true
   }
 }
