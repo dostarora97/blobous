@@ -55,6 +55,18 @@
   #party .pk-wide{width:100%;margin-bottom:8px}
   #party .pk-players{display:flex;flex-direction:column;gap:3px}
   #party .pk-p{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--text-dim)}
+  /* waiting overlay */
+  #lobby{position:fixed;inset:0;z-index:20;display:none;align-items:center;justify-content:center;background:rgba(12,26,29,.75);backdrop-filter:blur(4px)}
+  #lobby.show{display:flex}
+  .lobby-card{background:var(--panel);border:1px solid var(--grid-major);border-radius:6px;padding:32px 40px;text-align:center;max-width:340px}
+  .lobby-title{font-size:13px;letter-spacing:.3em;text-transform:uppercase;color:var(--reticle);font-weight:600;margin-bottom:14px}
+  .lobby-pips{display:flex;gap:10px;justify-content:center;margin-bottom:16px}
+  .lobby-pip{width:10px;height:10px;border-radius:50%;border:2px solid var(--grid-major);transition:background .25s,border-color .25s}
+  .lobby-pip.on{background:var(--acquired);border-color:var(--acquired)}
+  .lobby-count{font-size:11px;color:var(--text-dim);letter-spacing:.1em;margin-bottom:18px}
+  .lobby-hint{font-size:10px;color:var(--text-dim);letter-spacing:.08em;margin-bottom:8px}
+  .lobby-url{font-size:10px;color:var(--accent);letter-spacing:.06em;word-break:break-all;cursor:pointer;padding:6px 8px;border:1px solid var(--grid-major);border-radius:3px;line-height:1.5}
+  .lobby-url:hover{border-color:var(--accent)}
   #party .pk-sw{width:8px;height:8px;border-radius:50%;flex:none}
   @media (max-width:720px){#party,#title{display:none}} @media (max-width:640px){#shop{display:none}}
 </style>
@@ -74,6 +86,16 @@
     <div class="pk-row"><input id="pkCode" placeholder="room code" maxlength="12"><button id="pkJoin">Join</button></div>
     <button class="pk-wide" id="pkCreate">Create room</button>
     <div class="pk-players" id="pkPlayers"></div>
+  </div>
+
+  <div id="lobby">
+    <div class="lobby-card">
+      <div class="lobby-title">Waiting for players</div>
+      <div class="lobby-pips" id="lobbyPips"></div>
+      <div class="lobby-count" id="lobbyCount">1 of 2 players needed</div>
+      <div class="lobby-hint">Share this link with a friend:</div>
+      <div class="lobby-url" id="lobbyUrl" title="Click to copy"></div>
+    </div>
   </div>
 
   <div id="shop"></div>
@@ -131,7 +153,7 @@ function makeBot(i){ const ang=Math.random()*Math.PI*2, dist=200+Math.random()*5
 function startLocalRoom(n){ others = Array.from({length:n},(_,i)=>makeBot(i)); online=false; renderPlayers(); }
 
 // ===== blobs: denser, closer, high-value rarer =====
-let blobs=[], spawnTimer=0, eatenIds=new Set();
+let blobs=[], spawnTimer=0, eatenIds=new Set(), gameActive=true;
 const R_MIN=5,R_MAX=15, CAP=26;
 function spawnBlob(){
   // pop up close to a random circle (biased to you) so they appear "here and there" around play
@@ -204,8 +226,29 @@ function renderShop(){ shop.innerHTML='<div class="shop-h">Upgrades · spend poi
 const pkStatus=id('pkStatus'), pkPlayers=id('pkPlayers'), pkCode=id('pkCode');
 function renderPlayers(){ pkPlayers.innerHTML=circles().sort((a,b)=>b.score-a.score).slice(0,6).map(c=>`<div class="pk-p"><span class="pk-sw" style="background:${c.color}"></span>${c.isPlayer?'You':c.name} · ${c.score}${c.isBot?' ·bot':''}</div>`).join(''); }
 function randCode(){ return Math.random().toString(36).slice(2,6).toUpperCase(); }
-id('pkCreate').onclick=()=>{ const code=randCode(); pkCode.value=code; connectRoom(code); };
-id('pkJoin').onclick=()=>{ const code=(pkCode.value||'').trim().toUpperCase(); if(code)connectRoom(code); };
+id('pkCreate').onclick=async ()=>{
+  const host=partyHost();
+  if(!host){ pkStatus.innerHTML='Offline · cannot create room.<br>Open the deployed URL to play online.'; return; }
+  pkStatus.textContent='Creating room…';
+  try{
+    const res=await fetch('/api/rooms/create',{method:'POST'});
+    if(!res.ok) throw new Error('Server error');
+    const {code}=await res.json();
+    pkCode.value=code; connectRoom(code);
+  }catch(e){ pkStatus.textContent='Failed to create room — try again'; }
+};
+id('pkJoin').onclick=async ()=>{
+  const code=(pkCode.value||'').trim().toUpperCase(); if(!code)return;
+  const host=partyHost();
+  if(!host){ pkStatus.innerHTML='Offline · cannot join room.<br>Open the deployed URL to play online.'; return; }
+  pkStatus.textContent='Checking room…';
+  try{
+    const res=await fetch(`/api/rooms/join/${code}`);
+    const data=await res.json();
+    if(!data.ok){ pkStatus.textContent=data.error||'Room not found'; return; }
+    connectRoom(code);
+  }catch(e){ pkStatus.textContent='Connection failed — try again'; }
+};
 
 let net={socket:null,room:null,sendTimer:0};
 function connectRoom(code){
@@ -219,11 +262,11 @@ function connectRoom(code){
   try{
     const ws=new WebSocket(`${proto}://${host}/parties/main/${encodeURIComponent(code)}`);
     net.socket=ws;
-    ws.onopen=()=>{ online=true; others=[]; try{location.hash='room='+code;}catch{}
+    ws.onopen=()=>{ online=true; others=[]; gameActive=false; try{location.hash='room='+code;}catch{}
       ws.send(JSON.stringify({t:'hello',name:'P'+Math.floor(Math.random()*900+100),color:COLORS[Math.floor(Math.random()*COLORS.length)]}));
       pkStatus.innerHTML='Live in <b style="color:var(--reticle)">'+code+'</b> — share this URL'; };
     ws.onmessage=(ev)=>onNet(ev.data);
-    ws.onclose=()=>{ if(online) pkStatus.textContent='Disconnected — back to bots'; online=false; startLocalRoom(4); };
+    ws.onclose=()=>{ if(online) pkStatus.textContent='Disconnected — back to bots'; online=false; gameActive=true; lobbyEl.classList.remove('show'); startLocalRoom(4); };
     ws.onerror=()=>{ pkStatus.textContent='Connection error — using bots'; };
   }catch(err){ pkStatus.textContent='Connect failed — using bots'; online=false; startLocalRoom(4); }
 }
@@ -231,6 +274,21 @@ function onNet(data){ let m; try{m=JSON.parse(data)}catch{return;}
   if(m.t==='welcome'){ me.netId=m.id; if(m.blobs)blobs=m.blobs.map(b=>({...b,hold:0,eaterId:null})); }
   else if(m.t==='players'){ others=m.list.filter(p=>p.id!==me.netId).map(p=>({...p,isRemote:true})); renderPlayers(); }
   else if(m.t==='blobs'){ const keep=new Map(blobs.map(b=>[b.id,b])); blobs=m.list.filter(b=>!eatenIds.has(b.id)).map(b=>{ const e=keep.get(b.id); return e?Object.assign(e,{x:b.x,y:b.y,r:b.r,points:b.points,maxLife:b.maxLife,life:b.life}):{...b,hold:0,eaterId:null}; }); }
+  else if(m.t==='status'){ setLobby(m.state==='waiting', m.count); }
+  else if(m.t==='error'){ pkStatus.textContent=m.message||'Server error'; net.socket?.close(); }
+}
+
+const lobbyEl=id('lobby'), lobbyCount=id('lobbyCount'), lobbyPips=id('lobbyPips'), lobbyUrl=id('lobbyUrl');
+function setLobby(waiting, count){
+  gameActive=!waiting;
+  lobbyEl.classList.toggle('show', waiting);
+  if(waiting){
+    lobbyCount.textContent=`${count} of ${2} players connected`;
+    lobbyPips.innerHTML=Array.from({length:2},(_,i)=>`<span class="lobby-pip${i<count?' on':''}"></span>`).join('');
+    const url=location.href.split('#')[0]+(net.room?`#room=${net.room}`:'');
+    lobbyUrl.textContent=url;
+    lobbyUrl.onclick=()=>{ navigator.clipboard?.writeText(url).then(()=>flash('URL copied!')); };
+  }
 }
 function netSend(dt){ if(!online||!net.socket)return; net.sendTimer-=dt; if(net.sendTimer<=0){ net.sendTimer=66; try{ net.socket.send(JSON.stringify({t:'state',x:me.x,y:me.y,r:me.r,score:me.score})); }catch{} } }
 
@@ -291,11 +349,13 @@ function update(now){
   for(const c of circles()) if(c.r>MIN_R) c.r=Math.max(MIN_R, c.r - PASSIVE_DECAY*(c.r-MIN_R)*dt/1000);
 
   // eat blobs — any circle; biggest overlapper wins; leaving resets (no partial credit)
+  // Skip eating entirely while waiting for enough players to join
+  if(!gameActive) blobs.forEach(b=>{b.hold=0;b.eaterId=null;});
   const ppx=(mode==='inverted'||mode==='tilt')?cx:mouse.x, ppy=(mode==='inverted'||mode==='tilt')?cy:mouse.y; // player screen anchor for cursor mode
   if(mode==='normal'){ me.x=camera.x+(mouse.x-cx); me.y=camera.y+(mouse.y-cy); } // in cursor mode the circle follows the pointer
   clampToWorld(me); if(mode==='inverted'||mode==='tilt'){ camera.x=me.x; camera.y=me.y; }
   for(let i=blobs.length-1;i>=0;i--){ const b=blobs[i];
-    let eater=null; for(const c of circles()){ if(Math.hypot(c.x-b.x,c.y-b.y)<c.r){ if(!eater||c.r>eater.r)eater=c; } }
+    let eater=null; if(gameActive){ for(const c of circles()){ if(Math.hypot(c.x-b.x,c.y-b.y)<c.r){ if(!eater||c.r>eater.r)eater=c; } } }
     if(eater){ if(b.eaterId===eater.id) b.hold+=dt; else{ b.eaterId=eater.id; b.hold=dt; }
       const need=b.points*(eater.isPlayer?eatRate:14);
       if(b.hold>=need){ eater.score+=b.points; eater.r=Math.sqrt(Math.PI*eater.r*eater.r + EAT_GROWTH*b.points)/Math.sqrt(Math.PI); if(eater.isPlayer){ const sx=cx+(b.x-camera.x), sy=cy+(b.y-camera.y); popAt(sx,sy,b.points,b.emoji||(b.points>=40?'🤩':b.points>=20?'😋':'🍋')); renderShop(); } if(online&&net.socket){ try{net.socket.send(JSON.stringify({t:'ate',id:b.id}))}catch{} eatenIds.add(b.id); setTimeout(()=>eatenIds.delete(b.id),1000); } blobs.splice(i,1); continue; } }

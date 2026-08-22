@@ -1,34 +1,34 @@
 /**
  * Blob Party — Cloudflare Worker + Durable Objects
  *
- * Architecture:
- *   Worker (fetch)  → routes WebSocket upgrades to BlobRoom DO
- *                   → falls through to static assets (public/index.html)
- *   BlobRoom DO     → one instance per room code
- *                   → owns blob state authoritatively
- *                   → relays player circle state to all room members
- *                   → drives the game loop via alarm (~8 Hz)
+ * DOs:
+ *   RoomRegistry — single global instance; tracks valid room codes in SQLite
+ *   BlobRoom     — one per room code; owns game state; requires MIN_PLAYERS to start
  *
- * Free-tier safe:
- *   - SQLite-backed DO (new_sqlite_classes) required on Workers Free plan
- *   - Alarm stops when the room is empty → no idle compute charges
- *   - DO stays alive during play (active alarm prevents hibernation),
- *     so in-memory state is stable — no need to persist ephemeral game state
+ * HTTP API:
+ *   POST /api/rooms/create        → { code }
+ *   GET  /api/rooms/join/:code    → { ok } or { ok:false, error }
+ *
+ * WebSocket:
+ *   /parties/main/:code           → routed to BlobRoom (rejected if code not in Registry)
  *
  * Deploy: npx wrangler deploy
  */
 
 import { DurableObject } from 'cloudflare:workers';
 
-// ── Blob constants ─────────────────────────────────────────────────────────────
+// ── Shared constants ───────────────────────────────────────────────────────────
 
-const BLOB_CAP    = 40;
-const BLOB_R_MIN  = 5;
-const BLOB_R_MAX  = 15;
-const WORLD_DIST  = 1600;   // spawn radius from origin (matches client WORLD_HALF=2000)
-const TICK_MS     = 125;    // 8 Hz game loop
+const BLOB_CAP        = 40;
+const BLOB_R_MIN      = 5;
+const BLOB_R_MAX      = 15;
+const WORLD_DIST      = 1600;   // max blob spawn radius (matches client WORLD_HALF = 2000)
+const TICK_MS         = 125;    // 8 Hz game loop
+const MIN_PLAYERS     = 2;      // game doesn't start below this
+const ROOM_TTL_MS     = 4 * 60 * 60 * 1000;  // rooms expire after 4 hours
+const ROOM_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous 0/O, 1/I
 
-// ── Blob factory ──────────────────────────────────────────────────────────────
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 function spawnBlob() {
   const roll = Math.random();
@@ -40,40 +40,94 @@ function spawnBlob() {
   const life   = (3.5 + Math.random() * 5.5) * 1000;
   const ang    = Math.random() * Math.PI * 2;
   const dist   = Math.random() * WORLD_DIST;
-  return {
-    id:      crypto.randomUUID(),
-    x:       Math.cos(ang) * dist,
-    y:       Math.sin(ang) * dist,
-    r, points, life, maxLife: life,
-  };
+  return { id: crypto.randomUUID(), x: Math.cos(ang) * dist, y: Math.sin(ang) * dist, r, points, life, maxLife: life };
+}
+
+/** Consistent JSON response with CORS header. */
+function json(data, status = 200) {
+  return Response.json(data, { status, headers: { 'Access-Control-Allow-Origin': '*' } });
+}
+
+// ── RoomRegistry Durable Object ───────────────────────────────────────────────
+
+/**
+ * Single global instance (idFromName('global')).
+ * All room creation goes through here — clients can't self-create rooms by
+ * guessing URL parameters. Rooms expire after ROOM_TTL_MS.
+ */
+export class RoomRegistry extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    ctx.blockConcurrencyWhile(async () => {
+      ctx.storage.sql.exec(`
+        CREATE TABLE IF NOT EXISTS rooms (
+          code       TEXT    PRIMARY KEY,
+          created_at INTEGER NOT NULL
+        )
+      `);
+    });
+  }
+
+  /** Create a new unique room, persist it, return the 4-char code. */
+  createRoom() {
+    this.#purgeExpired();
+    const code = this.#uniqueCode();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO rooms (code, created_at) VALUES (?, ?)`,
+      code, Date.now()
+    );
+    return code;
+  }
+
+  /** Returns true if the code exists and has not expired. */
+  roomExists(code) {
+    const rows = this.ctx.storage.sql.exec(
+      `SELECT 1 FROM rooms WHERE code = ? AND created_at > ?`,
+      code, Date.now() - ROOM_TTL_MS
+    ).toArray();
+    return rows.length > 0;
+  }
+
+  #purgeExpired() {
+    this.ctx.storage.sql.exec(
+      `DELETE FROM rooms WHERE created_at <= ?`,
+      Date.now() - ROOM_TTL_MS
+    );
+  }
+
+  #uniqueCode() {
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const code = Array.from(
+        { length: 4 },
+        () => ROOM_CODE_CHARS[Math.floor(Math.random() * ROOM_CODE_CHARS.length)]
+      ).join('');
+      const taken = this.ctx.storage.sql.exec(
+        `SELECT 1 FROM rooms WHERE code = ?`, code
+      ).toArray().length > 0;
+      if (!taken) return code;
+    }
+    throw new Error('Could not generate a unique room code — try again');
+  }
 }
 
 // ── BlobRoom Durable Object ────────────────────────────────────────────────────
 
 /**
- * One BlobRoom instance per room code (keyed by idFromName).
+ * One instance per room code (keyed by idFromName(code)).
  *
- * In-memory state: players Map + blobs Map. Both are ephemeral — players
- * re-introduce themselves on reconnect, and blobs are re-seeded on cold start.
- * No SQLite writes needed for this game.
- *
- * WebSockets use the Hibernatable API (ctx.acceptWebSocket) so the runtime can
- * hibernate the DO between alarm ticks if needed. An active alarm every TICK_MS
- * effectively keeps the DO warm during play; we simply stop rescheduling when
- * the room empties so idle rooms don't consume compute.
+ * Game loop (alarm) only runs when >= MIN_PLAYERS are connected.
+ * Broadcasts { t:'status', state:'waiting'|'playing', count } on every player
+ * join/leave so clients can show the waiting screen or resume the game.
  */
 export class BlobRoom extends DurableObject {
-  /** @type {Map<string, {id:string,name:string,color:string,x:number,y:number,r:number,score:number}>} */
-  #players = new Map();
-  /** @type {Map<string, object>} */
-  #blobs   = new Map();
+  #players = new Map();  // playerId → player state
+  #blobs   = new Map();  // blobId   → blob
 
   constructor(ctx, env) {
     super(ctx, env);
     this.#seedBlobs(18);
-
-    // Reconnect any players whose WebSockets survived a DO hibernation.
-    // The alarm prevents hibernation during active play, but guard anyway.
+    // Reconnect any players whose WebSockets survived a (rare) DO hibernation.
+    // The active alarm prevents hibernation during play; this is a safety net.
     for (const ws of ctx.getWebSockets()) {
       const [pid] = ws.tags ?? [];
       if (pid && !this.#players.has(pid)) {
@@ -82,7 +136,7 @@ export class BlobRoom extends DurableObject {
     }
   }
 
-  // ── Connection lifecycle ────────────────────────────────────────────────────
+  // ── Connection lifecycle ──────────────────────────────────────────────────
 
   async fetch(request) {
     if (request.headers.get('Upgrade') !== 'websocket') {
@@ -92,19 +146,13 @@ export class BlobRoom extends DurableObject {
     const [client, server] = Object.values(new WebSocketPair());
     const pid = crypto.randomUUID();
 
-    // Tag the server-side socket with the player ID so we can identify it
-    // after hibernation without an external Map lookup.
     this.ctx.acceptWebSocket(server, [pid]);
+    this.#players.set(pid, this.#defaultPlayer(pid));
 
-    const player = this.#defaultPlayer(pid);
-    this.#players.set(pid, player);
-
-    // Welcome message carries the current blob set so the client can start
-    // rendering immediately without waiting for the first tick broadcast.
     server.send(JSON.stringify({ t: 'welcome', id: pid, blobs: [...this.#blobs.values()] }));
-    this.#broadcastPlayers();
 
-    await this.#ensureAlarm();
+    // Broadcast updated status to all connected clients (including new player)
+    await this.#broadcastStatus();
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -113,53 +161,46 @@ export class BlobRoom extends DurableObject {
     const [pid] = ws.tags ?? [];
     if (!pid) return;
 
-    // Reconstruct a minimal player entry if we woke from hibernation and
-    // the client sends state before we see it in getWebSockets (edge case).
-    if (!this.#players.has(pid)) {
-      this.#players.set(pid, this.#defaultPlayer(pid));
-    }
+    // Lazy-reconstruct after a rare hibernation wake
+    if (!this.#players.has(pid)) this.#players.set(pid, this.#defaultPlayer(pid));
 
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
     const player = this.#players.get(pid);
-
     switch (msg.t) {
       case 'hello':
         player.name  = String(msg.name  ?? 'Player').slice(0, 12);
         player.color = String(msg.color ?? player.color);
         break;
       case 'state':
-        // Coerce to numbers — never trust client-sent values as-is
+        // Coerce to numbers; never trust client values as-is
         player.x     = +msg.x     || 0;
         player.y     = +msg.y     || 0;
         player.r     = +msg.r     || 14;
         player.score = +msg.score || 0;
         break;
       case 'ate':
-        // First client to claim a blob wins; harmless if already removed
         if (typeof msg.id === 'string') this.#blobs.delete(msg.id);
         break;
     }
   }
 
-  webSocketClose(ws) {
+  async webSocketClose(ws) {
     const [pid] = ws.tags ?? [];
     if (pid) this.#players.delete(pid);
     this.#broadcastPlayers();
+    await this.#broadcastStatus(); // may pause game if count drops below MIN_PLAYERS
   }
 
-  webSocketError(ws) {
-    this.webSocketClose(ws);
-  }
+  webSocketError(ws) { this.webSocketClose(ws); }
 
-  // ── Game tick ───────────────────────────────────────────────────────────────
+  // ── Game tick ─────────────────────────────────────────────────────────────
 
   async alarm() {
     const sockets = this.ctx.getWebSockets();
-
-    // Empty room: stop ticking. The next connect will restart the alarm.
-    if (sockets.length === 0) return;
+    if (sockets.length === 0) return;              // room empty, expire alarm
+    if (this.#players.size < MIN_PLAYERS) return;  // not enough players; don't reschedule
 
     // Advance blob simulation
     while (this.#blobs.size < BLOB_CAP && Math.random() < 0.6) {
@@ -171,41 +212,42 @@ export class BlobRoom extends DurableObject {
       if (blob.life <= 0) this.#blobs.delete(id);
     }
 
-    // Serialize once, broadcast to all — avoids re-serializing per connection
+    // Serialize once, broadcast to all — avoids repeated JSON.stringify
     const blobMsg   = JSON.stringify({ t: 'blobs',   list: [...this.#blobs.values()] });
     const playerMsg = JSON.stringify({ t: 'players', list: [...this.#players.values()] });
-
     for (const ws of sockets) {
-      try {
-        ws.send(blobMsg);
-        ws.send(playerMsg);
-      } catch {
-        // WebSocket already closed; webSocketClose will clean up the player entry
-      }
+      try { ws.send(blobMsg); ws.send(playerMsg); } catch { /* client gone */ }
     }
 
     await this.ctx.storage.setAlarm(Date.now() + TICK_MS);
   }
 
-  // ── Private helpers ─────────────────────────────────────────────────────────
+  // ── Private ───────────────────────────────────────────────────────────────
 
-  /** @param {string} id */
   #defaultPlayer(id) {
     return { id, name: 'Player', color: '#7fb2b8', x: 0, y: 0, r: 14, score: 0 };
   }
 
   #seedBlobs(n) {
-    for (let i = 0; i < n; i++) {
-      const b = spawnBlob();
-      this.#blobs.set(b.id, b);
-    }
+    for (let i = 0; i < n; i++) { const b = spawnBlob(); this.#blobs.set(b.id, b); }
   }
 
   #broadcastPlayers() {
     const msg = JSON.stringify({ t: 'players', list: [...this.#players.values()] });
     for (const ws of this.ctx.getWebSockets()) {
-      try { ws.send(msg); } catch { /* client gone */ }
+      try { ws.send(msg); } catch {}
     }
+  }
+
+  async #broadcastStatus() {
+    const count = this.#players.size;
+    const state = count >= MIN_PLAYERS ? 'playing' : 'waiting';
+    const msg   = JSON.stringify({ t: 'status', state, count });
+    for (const ws of this.ctx.getWebSockets()) {
+      try { ws.send(msg); } catch {}
+    }
+    // (Re-)start the alarm when we just crossed the player threshold
+    if (state === 'playing') await this.#ensureAlarm();
   }
 
   async #ensureAlarm() {
@@ -220,18 +262,54 @@ export class BlobRoom extends DurableObject {
 export default {
   /**
    * @param {Request} request
-   * @param {{ BLOB_ROOM: DurableObjectNamespace, ASSETS: Fetcher }} env
+   * @param {{ BLOB_ROOM: DurableObjectNamespace, ROOM_REGISTRY: DurableObjectNamespace, ASSETS: Fetcher }} env
    */
   async fetch(request, env) {
-    const url   = new URL(request.url);
-    const match = /^\/parties\/main\/([^/?#]{1,16})/i.exec(url.pathname);
+    const url    = new URL(request.url);
+    const path   = url.pathname;
+    const method = request.method;
 
-    if (match && request.headers.get('Upgrade') === 'websocket') {
-      const roomId = decodeURIComponent(match[1]).toUpperCase();
-      const stub   = env.BLOB_ROOM.get(env.BLOB_ROOM.idFromName(roomId));
-      return stub.fetch(request);
+    // Helper: always use the single global registry instance
+    const registry = () => env.ROOM_REGISTRY.get(env.ROOM_REGISTRY.idFromName('global'));
+
+    // ── POST /api/rooms/create ──────────────────────────────────────────────
+    if (path === '/api/rooms/create' && method === 'POST') {
+      try {
+        const code = await registry().createRoom();
+        return json({ code });
+      } catch (err) {
+        return json({ error: String(err.message) }, 500);
+      }
     }
 
+    // ── GET /api/rooms/join/:code ───────────────────────────────────────────
+    const joinMatch = /^\/api\/rooms\/join\/([A-Z2-9]{1,16})$/i.exec(path);
+    if (joinMatch && method === 'GET') {
+      const code   = joinMatch[1].toUpperCase();
+      const exists = await registry().roomExists(code);
+      if (!exists) return json({ ok: false, error: 'Room not found or expired' }, 404);
+      return json({ ok: true });
+    }
+
+    // ── WebSocket upgrade: /parties/main/:code ──────────────────────────────
+    const wsMatch = /^\/parties\/main\/([^/?#]{1,16})/i.exec(path);
+    if (wsMatch && request.headers.get('Upgrade') === 'websocket') {
+      const code   = decodeURIComponent(wsMatch[1]).toUpperCase();
+      const exists = await registry().roomExists(code);
+
+      if (!exists) {
+        // Accept the WS to send a clean error message, then close
+        const [client, server] = Object.values(new WebSocketPair());
+        server.accept();
+        server.send(JSON.stringify({ t: 'error', message: 'Room not found or expired' }));
+        server.close(4404, 'Room not found');
+        return new Response(null, { status: 101, webSocket: client });
+      }
+
+      return env.BLOB_ROOM.get(env.BLOB_ROOM.idFromName(code)).fetch(request);
+    }
+
+    // ── Static assets (public/index.html etc.) ──────────────────────────────
     return env.ASSETS.fetch(request);
   },
 };

@@ -4,9 +4,6 @@
   "main": "src/worker.js",
   "compatibility_date": "2026-08-22",
 
-  // Serves public/ without R2. run_worker_first means the Worker intercepts
-  // every request — it routes WebSocket upgrades to the DO and falls through
-  // to static assets for everything else.
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -15,12 +12,13 @@
 
   "durable_objects": {
     "bindings": [
-      { "name": "BLOB_ROOM", "class_name": "BlobRoom" }
+      { "name": "BLOB_ROOM",      "class_name": "BlobRoom"      },
+      { "name": "ROOM_REGISTRY",  "class_name": "RoomRegistry"  }
     ]
   },
 
-  // new_sqlite_classes = available on free tier (no credit card needed)
   "migrations": [
-    { "tag": "v1", "new_sqlite_classes": ["BlobRoom"] }
+    { "tag": "v1", "new_sqlite_classes": ["BlobRoom"]     },
+    { "tag": "v2", "new_sqlite_classes": ["RoomRegistry"] }
   ]
 }
