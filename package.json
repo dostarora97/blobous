@@ -2,9 +2,11 @@
   "name": "blob-party",
   "version": "1.0.0",
   "private": true,
+  "type": "module",
   "description": "A little agar-style browser game with pointer-lock flight and PartyKit multiplayer.",
   "scripts": {
-    "dev": "partykit dev",
+    "dev": "partykit dev --port 4200",
+    "lan": "node server-lan.js",
     "deploy": "partykit deploy"
   },
   "devDependencies": {
