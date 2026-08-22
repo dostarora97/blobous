@@ -20,13 +20,6 @@
   #title{position:fixed;bottom:24px;left:22px;z-index:5;pointer-events:none;max-width:280px}
   #title h1{font-size:13px;letter-spacing:.34em;text-transform:uppercase;color:var(--reticle);font-weight:600;margin-bottom:8px}
   #title p{font-size:11px;line-height:1.7;color:var(--text-dim);letter-spacing:.04em}
-  #dock{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);z-index:6;display:flex;align-items:center;gap:14px;background:rgba(16,38,42,.82);backdrop-filter:blur(6px);border:1px solid var(--grid-major);border-radius:4px;padding:10px 12px 10px 16px}
-  #dock .state{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--text-dim);display:flex;align-items:center;gap:8px}
-  #dock .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
-  #dock.inverted .dot{background:var(--acquired);box-shadow:0 0 8px var(--acquired)}
-  #dock .state b{color:var(--reticle);font-weight:600}
-  #toggle{font:inherit;font-size:11px;letter-spacing:.16em;text-transform:uppercase;font-weight:600;color:var(--bg);background:var(--reticle);border:none;border-radius:3px;padding:9px 16px;cursor:pointer;transition:background .18s}
-  #toggle:hover{background:#fff} #dock.inverted #toggle{background:transparent;color:var(--text-dim);border:1px solid var(--grid-major);cursor:default}
   kbd{font:inherit;font-size:.9em;background:rgba(0,0,0,.25);color:inherit;border:1px solid currentColor;border-radius:3px;padding:0 5px;opacity:.8}
   #badge{position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:5;pointer-events:none;font-size:10px;letter-spacing:.22em;text-transform:uppercase;color:var(--text-dim);padding:5px 12px;border:1px solid var(--grid-major);border-radius:2px;opacity:0;transition:opacity .3s}
   #badge.show{opacity:1}
@@ -143,12 +136,11 @@
 
   <div id="title"><h1>Blob Party</h1><p id="titleText">Stretch the velocity line to fly. Blobs inside your circle get eaten. Overlap a smaller circle to steal its size; avoid bigger ones.</p></div>
 
-  <div id="dock"><div class="state"><span class="dot"></span><span id="dockState">You control the <b>cursor</b></span></div><button id="toggle">Enter inverted mode <kbd>L</kbd></button></div>
 
 <script>
 const canvas=document.getElementById('c'), ctx=canvas.getContext('2d');
-const dock=document.getElementById('dock'), toggleBtn=document.getElementById('toggle'), badge=document.getElementById('badge');
-const els={ modeText:id('modeText'), thr:id('thr'), spd:id('spd'), score:id('score'), rsz:id('rsz'), dockState:id('dockState'), titleText:id('titleText') };
+const badge=document.getElementById('badge');
+const els={ modeText:id('modeText'), thr:id('thr'), spd:id('spd'), score:id('score'), rsz:id('rsz'), titleText:id('titleText') };
 function id(x){return document.getElementById(x)}
 
 // ===== PARTYKIT =====
@@ -189,7 +181,13 @@ if (!playerName) {
   document.getElementById('pkGreeting').textContent = 'Hi, ' + playerName;
 }
 
-let mode='normal', locked=false;
+let mode='inverted', locked=false;
+canvas.addEventListener('click', ()=>{
+  if((mode==='inverted')&&canvas.requestPointerLock){
+    const p=canvas.requestPointerLock({unadjustedMovement:true});
+    if(p&&p.catch)p.catch(()=>{locked=false;});
+  }
+});
 let camera={x:0,y:0}, handle={x:0,y:0}, mouse={x:innerWidth/2,y:innerHeight/2}, speed=0;
 let dpr=1,W=0,H=0,cx=0,cy=0;
 const MAX_R=150, DEADZONE=10, GAIN=0.65;
@@ -254,7 +252,7 @@ addEventListener('mousemove',(e)=>{ mouse.x=e.clientX; mouse.y=e.clientY; if(mod
 
 // ===== mode toggle =====
 function enterInverted(){ if(mode==='inverted')return; mode='inverted'; handle.x=handle.y=0; lastX=lastY=null; sync(); flash('Inverted — push to steer · Esc/L to exit'); if(canvas.requestPointerLock){ const p=canvas.requestPointerLock({unadjustedMovement:true}); if(p&&p.catch)p.catch(()=>{locked=false;sync();}); } }
-function exitInverted(){ if(mode==='normal')return; mode='normal'; handle.x=handle.y=0; if(document.pointerLockElement)document.exitPointerLock(); locked=false; sync(); flash('Normal control restored'); }
+function exitInverted(){ if(document.pointerLockElement)document.exitPointerLock(); locked=false; sync(); }
 
 // ===== tilt mode (mobile accelerometer) =====
 function handleOrientation(e){
@@ -276,18 +274,14 @@ function enterTilt(){
 }
 function exitTilt(){ if(mode!=='tilt') return; mode='normal'; handle.x=handle.y=0; sync(); flash('Normal control restored'); }
 
-function toggle(){ if(mode==='inverted') exitInverted(); else if(mode==='tilt') exitTilt(); else enterInverted(); }
-toggleBtn.addEventListener('click',()=>{ if(isMobile){ enterTilt(); } else if(mode==='normal') enterInverted(); });
-addEventListener('keydown',(e)=>{ if(e.key==='l'||e.key==='L'){e.preventDefault();toggle();} else if(e.key==='Escape'){ toggle(); } else if(e.key===' '){e.preventDefault();buy('drain');} else if(e.key==='r'||e.key==='R')resetGame(); else if(e.key==='1')buy('drain'); else if(e.key==='t'||e.key==='T'){e.preventDefault(); if(mode==='tilt') exitTilt(); else enterTilt();} });
+function toggle(){ if(mode==='tilt') exitTilt(); else if(mode!=='inverted') enterTilt(); }
+addEventListener('keydown',(e)=>{ if(e.key===' '){e.preventDefault();buy('drain');} else if(e.key==='r'||e.key==='R')resetGame(); else if(e.key==='1')buy('drain'); else if(e.key==='t'||e.key==='T'){e.preventDefault(); if(mode==='tilt') exitTilt(); else enterTilt();} });
 document.addEventListener('pointerlockchange',()=>{ locked=(document.pointerLockElement===canvas); if(!locked&&mode==='inverted'&&document.pointerLockElement===null)exitInverted(); sync(); });
 document.addEventListener('pointerlockerror',()=>{locked=false;sync();});
 let bt=null; function flash(t){ badge.textContent=t; badge.classList.add('show'); clearTimeout(bt); bt=setTimeout(()=>badge.classList.remove('show'),2400); }
-function sync(){ const inv=mode==='inverted'||mode==='tilt'; const tilt=mode==='tilt'; canvas.className=inv?'inverted':'normal'; dock.classList.toggle('inverted',inv);
-  els.modeText.textContent=tilt?'tilt · accelerometer':inv?'inverted · throttle':'normal control';
-  els.dockState.innerHTML=tilt?'Tilt to fly · <b>tap to recalibrate</b>':inv?'You throttle the <b>world</b>':'You control the <b>cursor</b>';
-  els.titleText.textContent=tilt?'Tilt your phone to fly. Bigger = slower. Eat blobs to grow; overlap a smaller circle to drain it.':inv?'Stretch the velocity line to fly — but the bigger you grow, the slower you get. Eating blobs and draining smaller circles both make you larger.':'Your circle follows the cursor here. Eating grows you (and slows you). Enter inverted mode to fly and hunt.';
-  toggleBtn.innerHTML=tilt?'Recalibrate':inv?'Esc / L → normal control':isMobile?'Enable tilt control':'Enter inverted mode <kbd>Esc</kbd>';
-  if(!inv){ els.thr.textContent='—'; els.spd.textContent='0 px/s'; } }
+function sync(){ const tilt=mode==='tilt'; canvas.className='inverted';
+  els.modeText.textContent=tilt?'tilt · accelerometer':'inverted · throttle';
+  els.titleText.textContent=tilt?'Tilt your phone to fly. Bigger = slower. Eat blobs to grow; overlap a smaller circle to drain it.':'Stretch the velocity line to fly. Bigger = slower. Eat blobs to grow; overlap a smaller circle to drain it.'; }
 
 // ===== shop UI =====
 const shop=document.getElementById('shop');
@@ -510,7 +504,7 @@ function Line(a,b,c,d){ctx.beginPath();ctx.moveTo(a,b);ctx.lineTo(c,d);ctx.strok
 function Ring(x,y,r){ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.stroke();}
 function Dot(x,y,r){ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();}
 
-recompute(); renderShop(); resetGame();
+recompute(); renderShop(); resetGame(); sync();
 (function initParty(){ const host=partyHost(); const m=/room=([A-Za-z0-9]+)/.exec(location.hash);
   if(host && m){
     const code=m[1].toUpperCase();
@@ -525,10 +519,21 @@ recompute(); renderShop(); resetGame();
   } else if(!host){ pkStatus.textContent='Offline · bots. Open the deployed URL to play online.'; }
 })();
 
-// On mobile, auto-enter tilt mode on Android (no permission needed); iOS waits for button tap
-if(isMobile && typeof DeviceOrientationEvent!=='undefined' && typeof DeviceOrientationEvent.requestPermission!=='function'){
-  window.addEventListener('deviceorientation',handleOrientation);
-  mode='tilt'; tiltCalibrated=false; sync();
+// On mobile, auto-enter tilt mode. Android: no permission needed.
+// iOS: request permission on first canvas touch (user gesture required).
+if(isMobile){
+  if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'){
+    flash('Tap to enable tilt control');
+    canvas.addEventListener('touchstart', function enableTilt(){
+      DeviceOrientationEvent.requestPermission()
+        .then(s=>{ if(s==='granted'){ window.addEventListener('deviceorientation',handleOrientation); mode='tilt'; tiltCalibrated=false; sync(); } else flash('Tilt permission denied'); })
+        .catch(()=>flash('Tilt permission denied'));
+      canvas.removeEventListener('touchstart',enableTilt);
+    },{once:true});
+  } else if(typeof DeviceOrientationEvent!=='undefined'){
+    window.addEventListener('deviceorientation',handleOrientation);
+    mode='tilt'; tiltCalibrated=false; sync();
+  }
 }
 requestAnimationFrame(update);
 </script>
