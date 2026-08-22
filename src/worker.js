@@ -121,15 +121,15 @@ export class RoomRegistry extends DurableObject {
  * join/leave so clients can show the waiting screen or resume the game.
  */
 export class BlobRoom extends DurableObject {
-  #players    = new Map();
+  #players    = new Map();   // pid → confirmed player (sent hello with name)
+  #pending    = new Map();   // pid → connecting player (hello not yet received)
   #blobs      = new Map();
-  #minPlayers = MIN_PLAYERS;  // overridden to 1 for the GLOBAL room
+  #minPlayers = MIN_PLAYERS;
 
   constructor(ctx, env) {
     super(ctx, env);
     this.#seedBlobs(18);
-    // Reconnect any players whose WebSockets survived a (rare) DO hibernation.
-    // The active alarm prevents hibernation during play; this is a safety net.
+    // On hibernation wake, restore confirmed players from surviving WebSockets
     for (const ws of ctx.getWebSockets()) {
       const [pid] = ws.tags ?? [];
       if (pid && !this.#players.has(pid)) {
@@ -153,50 +153,62 @@ export class BlobRoom extends DurableObject {
     const pid = crypto.randomUUID();
 
     this.ctx.acceptWebSocket(server, [pid]);
-    this.#players.set(pid, this.#defaultPlayer(pid));
+    this.#pending.set(pid, this.#defaultPlayer(pid));  // confirmed after hello
 
     server.send(JSON.stringify({ t: 'welcome', id: pid, blobs: [...this.#blobs.values()] }));
-
-    // Broadcast updated status to all connected clients (including new player)
-    await this.#broadcastStatus();
+    await this.#broadcastStatus();  // count = confirmed players only
 
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  webSocketMessage(ws, raw) {
+  async webSocketMessage(ws, raw) {
     const [pid] = ws.tags ?? [];
     if (!pid) return;
 
-    // Lazy-reconstruct after a rare hibernation wake
-    if (!this.#players.has(pid)) this.#players.set(pid, this.#defaultPlayer(pid));
+    // Resolve player from confirmed or pending map
+    let player = this.#players.get(pid) ?? this.#pending.get(pid);
+    // Rebuild after rare hibernation — treat as pending until hello re-confirms name
+    if (!player) { player = this.#defaultPlayer(pid); this.#pending.set(pid, player); }
 
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
 
-    const player = this.#players.get(pid);
+    player.lastSeen = Date.now();
+
     switch (msg.t) {
-      case 'hello':
-        player.name  = String(msg.name  ?? 'Player').slice(0, 20);
+      case 'hello': {
+        player.name  = String(msg.name ?? '').trim().slice(0, 20) || 'Anon';
         player.color = String(msg.color ?? player.color);
+        // Promote from pending to confirmed — now visible to other players
+        if (this.#pending.has(pid)) {
+          this.#pending.delete(pid);
+          this.#players.set(pid, player);
+          this.#broadcastPlayers();
+          await this.#broadcastStatus();
+        }
         break;
+      }
       case 'state':
-        // Coerce to numbers; never trust client values as-is
-        player.x     = +msg.x     || 0;
-        player.y     = +msg.y     || 0;
-        player.r     = +msg.r     || 14;
-        player.score = +msg.score || 0;
+        if (this.#players.has(pid)) {  // only confirmed players update position
+          player.x     = +msg.x     || 0;
+          player.y     = +msg.y     || 0;
+          player.r     = +msg.r     || 14;
+          player.score = +msg.score || 0;
+        }
         break;
       case 'ate':
         if (typeof msg.id === 'string') this.#blobs.delete(msg.id);
         break;
+      case 'ping':
+        break;  // lastSeen already updated above
     }
   }
 
   async webSocketClose(ws) {
     const [pid] = ws.tags ?? [];
-    if (pid) this.#players.delete(pid);
+    if (pid) { this.#players.delete(pid); this.#pending.delete(pid); }
     this.#broadcastPlayers();
-    await this.#broadcastStatus(); // may pause game if count drops below MIN_PLAYERS
+    await this.#broadcastStatus();
   }
 
   webSocketError(ws) { this.webSocketClose(ws); }
@@ -205,7 +217,20 @@ export class BlobRoom extends DurableObject {
 
   async alarm() {
     const sockets = this.ctx.getWebSockets();
-    if (sockets.length === 0) return;              // room empty, expire alarm
+    if (sockets.length === 0) return;
+
+    // Evict players silent for >15 s (frozen tab, dropped connection)
+    const STALE_MS = 15_000, now = Date.now();
+    for (const [pid, p] of this.#players) {
+      if (now - (p.lastSeen ?? 0) > STALE_MS) {
+        this.#players.delete(pid);
+        for (const ws of this.ctx.getWebSockets(pid)) { try { ws.close(4408, 'timeout'); } catch {} }
+      }
+    }
+    for (const [pid, p] of this.#pending) {
+      if (now - (p.lastSeen ?? 0) > STALE_MS) this.#pending.delete(pid);
+    }
+
     if (this.#players.size < this.#minPlayers) return;  // not enough players; don't reschedule
 
     // Advance blob simulation
@@ -231,7 +256,7 @@ export class BlobRoom extends DurableObject {
   // ── Private ───────────────────────────────────────────────────────────────
 
   #defaultPlayer(id) {
-    return { id, name: 'Player', color: '#7fb2b8', x: 0, y: 0, r: 14, score: 0 };
+    return { id, name: 'Player', color: '#7fb2b8', x: 0, y: 0, r: 14, score: 0, lastSeen: Date.now() };
   }
 
   #seedBlobs(n) {

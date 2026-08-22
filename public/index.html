@@ -208,7 +208,7 @@ function buy(k){ if(upg[k]>=UP[k].max){flash(UP[k].name+' is maxed');return;} co
 const COLORS=['#e8a33d','#6fcf97','#e07a6f','#b08fe0','#f4d47a','#7fb2b8'];
 const NAMES=['Nyx','Orbit','Pax','Quill','Rho','Sol','Vega','Wisp'];
 const MIN_R=8, STEAL_RATE=0.5, GROW_EFF=0.75, EAT_GROWTH=15, PASSIVE_DECAY=0.04;
-const SPEED_BASE=520, SPEED_REF=14, SPEED_EXP=0.55, SPEED_FLOOR=150;  // speed falls off as radius grows
+const SPEED_BASE=560, SPEED_REF=14, SPEED_EXP=0.55, SPEED_FLOOR=150;  // speed falls off as radius grows
 function speedForRadius(r){ return Math.max(SPEED_FLOOR, SPEED_BASE*Math.pow(SPEED_REF/r, SPEED_EXP)); }
 function clampToWorld(obj){ const hw=WORLD_HALF-obj.r; obj.x=Math.max(-hw,Math.min(hw,obj.x)); obj.y=Math.max(-hw,Math.min(hw,obj.y)); }
 const me={ id:'me', name:'You', x:0,y:0, r:14, score:0, color:'#f4ede0', isPlayer:true };
@@ -337,6 +337,8 @@ id('pkLeave').onclick=()=>{
 let net={socket:null,room:null,sendTimer:0};
 function connectRoom(code){
   code=(code||'').trim().toUpperCase(); if(!code) return;
+  // Always require a name before joining any room
+  if(!playerName){ window._pendingRoom=code; nameEntryEl.classList.add('show'); nameInputEl.focus(); return; }
   net.room=code;
   const host=partyHost();
   if(!host){ pkStatus.innerHTML='Room <b style="color:var(--reticle)">'+code+'</b> · offline (bots).<br>Open the PartyKit URL to go online.'; return; }
@@ -375,7 +377,8 @@ function setLobby(waiting, count, needed){
     lobbyUrl.onclick=()=>{ navigator.clipboard?.writeText(url).then(()=>flash('URL copied!')); };
   }
 }
-function netSend(dt){ if(!online||!net.socket)return; net.sendTimer-=dt; if(net.sendTimer<=0){ net.sendTimer=66; try{ net.socket.send(JSON.stringify({t:'state',x:me.x,y:me.y,r:me.r,score:me.score})); }catch{} } }
+let pingTimer=0;
+function netSend(dt){ if(!online||!net.socket)return; net.sendTimer-=dt; if(net.sendTimer<=0){ net.sendTimer=66; try{ net.socket.send(JSON.stringify({t:'state',x:me.x,y:me.y,r:me.r,score:me.score})); }catch{} } pingTimer-=dt; if(pingTimer<=0){ pingTimer=5000; try{ net.socket.send(JSON.stringify({t:'ping'})); }catch{} } }
 
 // ===== bot AI =====
 function botThink(bot,dt){
@@ -420,7 +423,7 @@ function update(now){
   const dt=Math.min(now-lastT,50); lastT=now;
 
   // fly
-  if(mode==='inverted'||mode==='tilt'){ const m=Math.hypot(handle.x,handle.y); let eff=0; if(m>DEADZONE)eff=Math.min(1,(m-DEADZONE)/(MAX_R-DEADZONE)); speed=eff*speedForRadius(me.r); if(m>0){ camera.x+=(handle.x/m)*speed*dt/1000; camera.y+=(handle.y/m)*speed*dt/1000; } els.thr.textContent=Math.round(eff*100)+'%'; els.spd.textContent=Math.round(speed)+' px/s'; } else speed=0;
+  if(mode==='inverted'||mode==='tilt'){ const m=Math.hypot(handle.x,handle.y); let eff=0; if(m>DEADZONE){ const t=Math.min(1,(m-DEADZONE)/(MAX_R-DEADZONE)); eff=mode==='tilt'?Math.sqrt(t):t; } speed=eff*speedForRadius(me.r); if(m>0){ camera.x+=(handle.x/m)*speed*dt/1000; camera.y+=(handle.y/m)*speed*dt/1000; } els.thr.textContent=Math.round(eff*100)+'%'; els.spd.textContent=Math.round(speed)+' px/s'; } else speed=0;
   me.x=camera.x; me.y=camera.y;
 
   // offline sim: spawn blobs + move bots
